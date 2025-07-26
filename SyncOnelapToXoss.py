@@ -562,6 +562,10 @@ def parse_activity_date(activity):
                         # 上午活动，设置为当天08:00
                         date_obj = datetime.strptime(activity_date, fmt)
                         return date_obj.replace(hour=8, minute=0, second=0)
+                    elif '晚上' in title:
+                        # 晚上活动，设置为当天20:00
+                        date_obj = datetime.strptime(activity_date, fmt)
+                        return date_obj.replace(hour=19, minute=0, second=0)
                     else:
                         # 没有明确时间，设置为中午12:00
                         date_obj = datetime.strptime(activity_date, fmt)
