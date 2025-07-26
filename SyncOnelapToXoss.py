@@ -712,14 +712,14 @@ for batch in batch_files(valid_files, MAX_FILES_PER_BATCH):
                 continue
         
         # 查找并点击"上传"按钮 - 通过class定位第二个按钮
-        try:
+        try: 
             # 正确的CSS选择器：用点号连接多个class
             upload_btn = tab.ele('.fit_btn van-button van-button--primary van-button--normal',index=2)
 
             if upload_btn:
                 upload_btn.click()
                 logger.info("通过文本内容成功点击上传按钮")
-                time.sleep(30)
+                time.sleep(2)
             else:
                 logger.error("无法找到行者的上传按钮")
                 
