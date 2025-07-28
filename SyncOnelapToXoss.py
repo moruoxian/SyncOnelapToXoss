@@ -1,7 +1,7 @@
-# OneLap到行者(XOSS)数据同步工具
+# OneLap平台数据同步工具
 # 文件类型：py
 # 文件名称：SyncOnelapToXoss.py
-# 功能：从OneLap平台下载最新运动数据并同步到行者平台
+# 功能：从OneLap平台下载最新运动数据并同步到行者平台和捷安特骑行平台
 from math import log
 from DrissionPage import ChromiumPage, ChromiumOptions
 import os
@@ -35,6 +35,9 @@ def load_config_from_ini(config_file="settings.ini"):
         cfg['ONELAP_PASSWORD'] = config.get('onelap', 'password', fallback='')
         cfg['XOSS_ACCOUNT'] = config.get('xoss', 'username', fallback='')
         cfg['XOSS_PASSWORD'] = config.get('xoss', 'password', fallback='')
+        cfg['GIANT_ACCOUNT'] = config.get('giant', 'username', fallback='')
+        cfg['GIANT_PASSWORD'] = config.get('giant', 'password', fallback='')
+        cfg['GIANT_ENABLE_SYNC'] = config.getboolean('giant', 'enable_sync', fallback=False)
         cfg['STORAGE_DIR'] = config.get('sync', 'storage_dir', fallback='./downloads')
         
         formats_str = config.get('sync', 'supported_formats', fallback='.fit,.gpx,.tcx')
@@ -60,6 +63,9 @@ if ini_config:
     ONELAP_PASSWORD = ini_config['ONELAP_PASSWORD']
     XOSS_ACCOUNT = ini_config['XOSS_ACCOUNT']
     XOSS_PASSWORD = ini_config['XOSS_PASSWORD']
+    GIANT_ACCOUNT = ini_config['GIANT_ACCOUNT']
+    GIANT_PASSWORD = ini_config['GIANT_PASSWORD']
+    GIANT_ENABLE_SYNC = ini_config['GIANT_ENABLE_SYNC']
     STORAGE_DIR = ini_config['STORAGE_DIR']
     SUPPORTED_FORMATS = ini_config['SUPPORTED_FORMATS']
     MAX_FILE_SIZE = ini_config['MAX_FILE_SIZE']
@@ -74,6 +80,10 @@ if ini_config:
         print("⚠️ 请在 settings.ini 中配置正确的行者账号")  
     if XOSS_PASSWORD in ['xxxxxx', '']:
         print("⚠️ 请在 settings.ini 中配置正确的行者密码")
+    if GIANT_ACCOUNT in ['139xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的捷安特账号")
+    if GIANT_PASSWORD in ['xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的捷安特密码")
 else:
     # 使用默认配置
     print("📄 使用默认配置")
@@ -83,6 +93,9 @@ else:
     ONELAP_PASSWORD = ''
     XOSS_ACCOUNT = ''
     XOSS_PASSWORD = ''
+    GIANT_ACCOUNT = ''
+    GIANT_PASSWORD = ''
+    GIANT_ENABLE_SYNC = False
     STORAGE_DIR = './downloads'
     SUPPORTED_FORMATS = ['.fit', '.gpx', '.tcx']
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -202,6 +215,144 @@ def login_onelap_browser(tab, account, password):
         logger.error(f"顽鹿浏览器登录失败: {e}")
         raise
 
+def login_giant_browser(tab, account, password):
+    """使用现有浏览器标签页登录捷安特骑行平台"""
+    logger.info("使用浏览器登录捷安特骑行平台")
+    
+    try:
+        # 访问捷安特登录页面
+        logger.info("正在访问捷安特登录页面...")
+        tab.get('https://ridelife.giant.com.cn/web/login.html')
+        time.sleep(1)  # 等待页面加载
+        
+        logger.info(f"捷安特登录页面标题: {tab.title}")
+        logger.info(f"捷安特当前URL: {tab.url}")
+        
+        # 输入账号信息
+        try:
+            # 查找用户名输入框 - 通过多种选择器尝试
+            account_selectors = [
+                '@name=username'
+            ]
+            username_input = None
+            
+            for selector in account_selectors:
+                try:
+                    username_input = tab.ele(selector, timeout=2)
+                    if username_input:
+                        logger.info(f"找到用户名输入框: {selector}")
+                        break
+                except:
+                    continue
+            
+            if username_input:
+                username_input.clear()
+                username_input.input(account)
+                logger.info("已输入捷安特账号信息")
+            else:
+                raise Exception("未找到用户名输入框")
+        except Exception as e:
+            logger.error(f"输入用户名失败: {e}")
+            raise
+        
+        # 输入密码信息
+        try:
+            # 查找密码输入框 - 通过多种选择器尝试
+            password_selectors = [
+                '@name=password'
+            ]
+            password_input = None
+            
+            for selector in password_selectors:
+                try:
+                    password_input = tab.ele(selector, timeout=2)
+                    if password_input:
+                        logger.info(f"找到密码输入框: {selector}")
+                        break
+                except:
+                    continue
+            
+            if password_input:
+                password_input.clear()
+                password_input.input(password)
+                logger.info("已输入捷安特密码信息")
+            else:
+                raise Exception("未找到密码输入框")
+        except Exception as e:
+            logger.error(f"输入密码失败: {e}")
+            raise
+        
+        # 点击登录按钮
+        try:
+            login_selectors = [
+                '.btn btn_shadow btn_submit'
+            ]
+            
+            login_button = None
+            for selector in login_selectors:
+                try:
+                    login_button = tab.ele(selector, timeout=2)
+                    if login_button:
+                        logger.info(f"找到登录按钮: {selector}")
+                        break
+                except:
+                    continue
+            
+            if login_button:
+                login_button.click()
+                logger.info("已点击捷安特登录按钮")
+            else:
+                raise Exception("未找到登录按钮")
+           
+        except Exception as e:
+            logger.error(f"点击登录按钮失败: {e}")
+            raise
+        
+        # 等待登录完成
+        time.sleep(2)
+        
+        # 检查登录是否成功 - 通过URL变化或页面内容判断
+        current_url = tab.url
+        logger.info(f"登录后URL: {current_url}")
+        
+        # 如果还在登录页面，可能登录失败
+        if 'login.html' in current_url:
+            # 检查是否有错误提示
+            try:
+                error_selectors = ['.error-msg', '.error-tip', '.login-error']
+                for selector in error_selectors:
+                    try:
+                        error_elements = tab.eles(selector)
+                        for error_elem in error_elements:
+                            if error_elem.text and error_elem.text.strip():
+                                logger.error(f"捷安特登录错误: {error_elem.text.strip()}")
+                    except:
+                        continue
+                raise Exception("捷安特登录失败，仍在登录页面")
+            except:
+                logger.error("捷安特登录失败")
+                raise
+        
+        # 获取登录后的cookies
+        cookies = tab.cookies()
+        logger.info("成功获取捷安特登录cookies")
+        
+        # 构造session的cookies
+        session_cookies = {}
+        for cookie in cookies:
+            session_cookies[cookie['name']] = cookie['value']
+        
+        logger.info("捷安特登录成功！")
+        return session_cookies
+        
+    except Exception as e:
+        logger.error(f"捷安特浏览器登录失败: {e}")
+        raise
+# 将文件分批处理
+def batch_files(file_list, batch_size):
+    """将文件列表分批处理"""
+    for i in range(0, len(file_list), batch_size):
+        yield file_list[i:i + batch_size]
 def fetch_activities(session, cookies_dict, latest_xoss_activity):
     """获取活动列表数据"""
     logger.info("获取活动列表数据")
@@ -355,6 +506,176 @@ def download_fit_file(session, activity, headers):
             os.remove(filepath)
             logger.warning(f"已删除不完整文件: {filepath}")
 
+def upload_files_to_giant(tab, valid_files):
+    """上传文件到捷安特骑行平台"""
+    logger.info("===== 开始上传文件到捷安特平台 =====")
+    
+    try:
+        # 尝试找到上传页面，如果没有明确的上传页面，可能需要在主页面寻找上传入口
+        # 先尝试访问可能的上传页面
+        upload_urls = [
+            'https://ridelife.giant.com.cn/web/main_fit.html',
+        ]
+        
+        upload_found = False
+        for upload_url in upload_urls:
+            try:
+                logger.info(f"尝试访问上传页面: {upload_url}")
+                tab.get(upload_url)
+                time.sleep(3)
+                
+                # 检查页面是否包含上传相关元素
+                upload_elements = tab.eles('#btn_upload')
+                if upload_elements:
+                    logger.info(f"在 {upload_url} 找到上传功能")
+                    upload_found = True
+                    
+                    # 点击上传按钮，弹出上传窗体
+                    upload_elements[0].click()
+                    time.sleep(0.5)  # 等待窗体加载
+                    logger.info("已点击上传按钮，弹出上传窗体")
+                    
+                    # 配置设备类型下拉框
+                    try:
+                        device_select = tab.ele('@name=device', timeout=3)
+                        if device_select:
+                            # 选择"码表"选项
+                            device_select.select.by_value('bike_computer')
+                            logger.info("已选择设备类型：码表")
+                        else:
+                            logger.warning("未找到设备类型下拉框")
+                    except Exception as e:
+                        logger.error(f"配置设备类型失败: {e}")
+                    
+                    # 配置品牌下拉框
+                    try:
+                        brand_select = tab.ele('@name=brand', timeout=3)
+                        if brand_select:
+                            # 选择"顽鹿Onelap"选项
+                            brand_select.select.by_value('onelap')
+                            logger.info("已选择品牌：顽鹿Onelap")
+                        else:
+                            logger.warning("未找到品牌下拉框")
+                    except Exception as e:
+                        logger.error(f"配置品牌失败: {e}")
+                    
+                    time.sleep(1)  # 等待下拉框配置完成
+                    break
+            except:
+                continue
+        
+        if not upload_found:
+            logger.warning("未找到捷安特平台的上传功能，跳过上传步骤")
+            return False
+        
+        logger.info(f"当前页面URL: {tab.url}")
+        logger.info(f"当前页面标题: {tab.title}")
+        
+        # 分批上传文件
+        for batch in batch_files(valid_files, 10*MAX_FILES_PER_BATCH):
+            logger.info(f"正在上传批次文件到捷安特平台，共 {len(batch)} 个文件")
+            
+            try:
+                # 在弹出的窗体中查找文件上传输入框
+                upload_selectors = [
+                    '#files'
+                ]
+                
+                upload_element = None
+                for selector in upload_selectors:
+                    try:
+                        upload_element = tab.ele(selector, timeout=2)
+                        if upload_element:
+                            logger.info(f"找到窗体内的文件上传元素: {selector}")
+                            break
+                    except:
+                        continue
+                
+                if not upload_element:
+                    logger.error("无法找到捷安特平台弹出窗体中的文件上传元素")
+                    continue
+                
+                # 批量上传文件（一次性选择所有文件）
+                try:
+                    logger.info(f"正在批量上传 {len(batch)} 个文件到捷安特平台...")
+                    
+                    # 构建文件路径列表
+                    file_paths = []
+                    for file_name in batch:
+                        if os.path.isabs(file_name):
+                            file_paths.append(file_name)
+                        else:
+                            file_paths.append(os.path.join(STORAGE_DIR, file_name))
+                    
+                    # 打印即将上传的文件列表
+                    for file_path in file_paths:
+                        logger.info(f"准备上传: {os.path.basename(file_path)}")
+                    
+                    # 一次性选择所有文件（支持多文件选择）
+                    try:
+                        # 尝试传递多个文件路径
+                        if len(file_paths) == 1:
+                            # 单个文件
+                            upload_element.input(file_paths[0])
+                        else:
+                            # 多个文件，使用换行符分隔的路径字符串
+                            # 某些平台支持这种方式
+                            upload_element.input('\n'.join(file_paths))
+                        
+                        logger.info(f"已选择 {len(file_paths)} 个文件进行上传")
+                        
+                    except Exception as e:
+                        logger.warning(f"批量选择文件失败，尝试逐个选择: {e}")
+                        # 如果批量失败，回退到逐个选择
+                        return False
+                    
+                    # time.sleep(1)  # 等待文件选择完成
+                    
+                except Exception as e:
+                    logger.error(f"批量文件选择失败: {e}")
+                    continue
+                
+                # 查找并点击弹出窗体内的提交/确认按钮
+                try:
+                    submit_selectors = [
+                        
+                    ]
+                    
+                    submit_button = None
+                    submit_button = tab.ele('.btn_submit form_btn btn btn_color_1 btn_shadow btn_round', timeout=2)
+                    if submit_button:
+                        logger.info(f"找到提交按钮: {selector}")
+
+
+                    
+                    if submit_button:
+                        submit_button.click()
+                        logger.info("已点击捷安特上传提交按钮")
+                        # time.sleep(1)
+                    else:
+                        logger.warning("未找到提交按钮，文件可能已自动上传")
+
+                    time.sleep(1)
+                    #缺少一个 btn ok的点击
+                    tab.ele('.btn ok').click()
+                    logger.info("已经提交成功了")
+
+                except Exception as e:
+                    logger.warning(f"查找提交按钮失败: {e}")
+                    
+            except Exception as e:
+                logger.error(f"批次上传到捷安特失败: {e}")
+                continue
+            
+            time.sleep(1)  # 批次间隔
+        
+        logger.info("===== 捷安特平台文件上传完成 =====")
+        return True
+        
+    except Exception as e:
+        logger.error(f"上传到捷安特平台失败: {e}")
+        return False
+
 # 获取屏幕尺寸并计算窗口大小
 try:
     import tkinter as tk
@@ -407,12 +728,20 @@ else:
 # 启动浏览器
 tab = ChromiumPage(options)
 
+#test giant
+# giant_cookies = login_giant_browser(tab, GIANT_ACCOUNT, GIANT_PASSWORD)
+# # 测试上传文件 读取文件夹下所有文件
+# valid_files = [f for f in os.listdir(STORAGE_DIR) if f.endswith('.fit') or f.endswith('.gpx')]
+# upload_success = upload_files_to_giant(tab, valid_files)
+
 # === 步骤1：先登录顽鹿获取cookies ===
 logger.info("===== 步骤1：登录顽鹿平台 =====")
 session = create_retry_session()
 try:
     # 使用浏览器方式登录顽鹿账号
     onelap_cookies = login_onelap_browser(tab, ONELAP_ACCOUNT, ONELAP_PASSWORD)
+
+
     logger.info("顽鹿登录完成，准备获取活动数据...")
 except Exception as e:
     logger.critical(f"顽鹿登录失败: {e}")
@@ -695,7 +1024,7 @@ if xoss_activities:
     logger.info(f"  - 标题: {latest_xoss_activity.get('title', 'N/A')}")
     logger.info(f"  - 距离: {latest_xoss_activity.get('distance', 0)}km")
     logger.info(f"  - 解析时间: {latest_date}")
-    
+
     # 显示前5条活动记录用于调试
     logger.info("前5条活动记录（按时间降序）:")
     for i, activity in enumerate(xoss_activities[:5]):
@@ -781,11 +1110,7 @@ if not valid_files:
     tab.close()
     exit()
 
-# 将文件分批处理
-def batch_files(file_list, batch_size):
-    """将文件列表分批处理"""
-    for i in range(0, len(file_list), batch_size):
-        yield file_list[i:i + batch_size]
+
 
 # === 步骤4：跳转到行者上传页面并分批上传文件 ===
 logger.info("===== 步骤4：开始上传文件到行者平台 =====")
@@ -829,7 +1154,7 @@ for batch in batch_files(valid_files, MAX_FILES_PER_BATCH):
                     upload_element.click.to_upload(file_path)
                 else:
                     upload_element.input(file_path)
-                time.sleep(2)  # 等待文件上传完成
+                time.sleep(0.5)  # 等待文件上传完成
                 logger.info(f"文件上传完成: {os.path.basename(file_path)}")
             except Exception as e:
                 logger.error(f"上传文件失败 {file_path}: {e}")
@@ -857,8 +1182,34 @@ for batch in batch_files(valid_files, MAX_FILES_PER_BATCH):
     
     time.sleep(2)  # 批次间隔
 
-# === 步骤5：验证同步结果 ===
-logger.info("===== 步骤5：验证同步结果 =====")
+# === 步骤5：上传文件到捷安特骑行平台 ===
+logger.info("===== 步骤5：上传文件到捷安特骑行平台 =====")
+try:
+    # 检查是否启用了捷安特同步
+    if not GIANT_ENABLE_SYNC:
+        logger.info("捷安特平台同步已禁用，跳过捷安特平台上传")
+    elif not (GIANT_ACCOUNT and GIANT_PASSWORD and GIANT_ACCOUNT not in ['139xxxxxx', ''] and GIANT_PASSWORD not in ['xxxxxx', '']):
+        logger.info("未配置捷安特账号或密码为默认值，跳过捷安特平台上传")
+    else:
+        # 登录捷安特平台
+        logger.info("开始登录捷安特骑行平台...")
+        giant_cookies = login_giant_browser(tab, GIANT_ACCOUNT, GIANT_PASSWORD)
+        logger.info("捷安特登录完成，开始上传文件...")
+        
+        # 上传文件到捷安特平台
+        upload_success = upload_files_to_giant(tab, valid_files)
+        
+        if upload_success:
+            logger.info("文件已成功上传到捷安特平台")
+        else:
+            logger.warning("捷安特平台上传出现问题，请手动检查")
+            
+except Exception as e:
+    logger.error(f"捷安特平台上传过程出错: {e}")
+    logger.info("继续执行后续步骤...")
+
+# === 步骤6：验证同步结果 ===
+logger.info("===== 步骤6：验证同步结果 =====")
 try:
     # 跳转到行者活动列表页面验证上传结果
     logger.info("跳转到行者活动列表页面验证同步结果...")
