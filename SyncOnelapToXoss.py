@@ -14,14 +14,71 @@ import logging
 import shutil
 from bs4 import BeautifulSoup  # 添加BeautifulSoup用于HTML解析
 
-# 导入配置
-try:
-    from config import *
-except ImportError:
-    print("未找到config.py配置文件，使用默认配置")
-    # 默认配置
+# 导入配置 - 支持INI配置文件
+import configparser
+
+def load_config_from_ini(config_file="settings.ini"):
+    """从INI配置文件加载所有配置参数"""
+    if not os.path.exists(config_file):
+        print(f"配置文件 {config_file} 不存在，使用默认配置")
+        return None
+        
+    try:
+        config = configparser.ConfigParser()
+        config.read(config_file, encoding='utf-8-sig')  # 处理BOM字符
+        print(f"✅ 成功从 {config_file} 加载配置")
+        
+        cfg = {}
+        cfg['LOG_LEVEL'] = config.get('app', 'log_level', fallback='INFO')
+        cfg['HEADLESS_MODE'] = config.getboolean('app', 'headless_mode', fallback=False)
+        cfg['ONELAP_ACCOUNT'] = config.get('onelap', 'username', fallback='')
+        cfg['ONELAP_PASSWORD'] = config.get('onelap', 'password', fallback='')
+        cfg['XOSS_ACCOUNT'] = config.get('xoss', 'username', fallback='')
+        cfg['XOSS_PASSWORD'] = config.get('xoss', 'password', fallback='')
+        cfg['STORAGE_DIR'] = config.get('sync', 'storage_dir', fallback='./downloads')
+        
+        formats_str = config.get('sync', 'supported_formats', fallback='.fit,.gpx,.tcx')
+        cfg['SUPPORTED_FORMATS'] = [fmt.strip() for fmt in formats_str.split(',')]
+        
+        cfg['MAX_FILE_SIZE'] = config.getint('sync', 'max_file_size_mb', fallback=50) * 1024 * 1024
+        cfg['MAX_FILES_PER_BATCH'] = config.getint('sync', 'max_files_per_batch', fallback=5)
+        
+        return cfg
+    except Exception as e:
+        print(f"❌ 读取INI配置文件失败: {e}")
+        return None
+
+# 配置加载逻辑 - 优先INI配置，否则使用默认配置
+print("🔧 正在加载配置...")
+ini_config = load_config_from_ini()
+
+if ini_config:
+    # 使用INI配置
+    LOG_LEVEL = ini_config['LOG_LEVEL']
+    HEADLESS_MODE = ini_config['HEADLESS_MODE']
+    ONELAP_ACCOUNT = ini_config['ONELAP_ACCOUNT']
+    ONELAP_PASSWORD = ini_config['ONELAP_PASSWORD']
+    XOSS_ACCOUNT = ini_config['XOSS_ACCOUNT']
+    XOSS_PASSWORD = ini_config['XOSS_PASSWORD']
+    STORAGE_DIR = ini_config['STORAGE_DIR']
+    SUPPORTED_FORMATS = ini_config['SUPPORTED_FORMATS']
+    MAX_FILE_SIZE = ini_config['MAX_FILE_SIZE']
+    MAX_FILES_PER_BATCH = ini_config['MAX_FILES_PER_BATCH']
+    
+    # 配置验证提示
+    if ONELAP_ACCOUNT in ['139xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的OneLap账号")
+    if ONELAP_PASSWORD in ['xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的OneLap密码")
+    if XOSS_ACCOUNT in ['139xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的行者账号")  
+    if XOSS_PASSWORD in ['xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的行者密码")
+else:
+    # 使用默认配置
+    print("📄 使用默认配置")
     LOG_LEVEL = 'INFO'
-    HEADLESS_MODE = True
+    HEADLESS_MODE = False
     ONELAP_ACCOUNT = ''
     ONELAP_PASSWORD = ''
     XOSS_ACCOUNT = ''
@@ -177,7 +234,7 @@ def fetch_activities(session, cookies_dict, latest_xoss_activity):
                 xoss_time_str = latest_xoss_activity['activity_date']
                 # 尝试不同的时间格式解析
                 xoss_time = None
-                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']:
+                for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S']:
                     try:
                         xoss_time = datetime.strptime(xoss_time_str[:19], fmt)
                         break
@@ -189,11 +246,25 @@ def fetch_activities(session, cookies_dict, latest_xoss_activity):
                     activities_after_matched = []
                     for activity in filtered:
                         try:
-                            onelap_time = datetime.fromisoformat(activity['created_at'].replace('Z', '+00:00'))
-                            if onelap_time.replace(tzinfo=None) > xoss_time:
+                            # created_at 是秒级 Unix 时间戳
+                            created_at = activity['created_at']
+                            if isinstance(created_at, int):
+                                # 直接使用秒级时间戳
+                                onelap_time = datetime.fromtimestamp(created_at)
+                            elif isinstance(created_at, str):
+                                # 如果是字符串，尝试解析ISO格式
+                                onelap_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                onelap_time = onelap_time.replace(tzinfo=None)
+                            else:
+                                logger.warning(f"未知的时间格式: {created_at} ({type(created_at)})")
+                                # 保守地包含该活动
+                                activities_after_matched.append(activity)
+                                continue
+                                
+                            if onelap_time > xoss_time:
                                 activities_after_matched.append(activity)
                         except Exception as e:
-                            logger.debug(f"解析OneLap活动时间失败: {e}")
+                            logger.debug(f"解析OneLap活动时间失败: {e}, created_at={activity.get('created_at')}")
                             # 如果时间解析失败，保守地包含该活动
                             activities_after_matched.append(activity)
                     
@@ -284,6 +355,29 @@ def download_fit_file(session, activity, headers):
             os.remove(filepath)
             logger.warning(f"已删除不完整文件: {filepath}")
 
+# 获取屏幕尺寸并计算窗口大小
+try:
+    import tkinter as tk
+    root = tk.Tk()
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    root.destroy()  # 立即销毁tkinter窗口
+    
+    # 计算半屏尺寸和右侧位置
+    half_width = screen_width // 2
+    window_height = screen_height
+    right_position = half_width  # 右半屏的起始位置
+    
+    logger.info(f"检测到屏幕尺寸: {screen_width}x{screen_height}")
+    logger.info(f"设置浏览器窗口: {half_width}x{window_height}，位置: ({right_position}, 0)")
+    
+except Exception as e:
+    # 如果获取屏幕尺寸失败，使用默认值
+    logger.warning(f"无法获取屏幕尺寸: {e}，使用默认值")
+    half_width = 960
+    window_height = 1080
+    right_position = 960
+
 # 初始化浏览器选项
 options = ChromiumOptions()
 options.incognito()  # 启用匿名模式
@@ -296,6 +390,11 @@ options.set_argument("--disable-features=VizDisplayCompositor")
 options.set_argument("--disable-blink-features=AutomationControlled")
 options.set_argument("--disable-extensions")            # 禁用扩展
 options.set_argument("--remote-debugging-port=9222")    # 设置调试端口
+
+# 动态设置窗口大小和位置
+options.set_argument(f"--window-size={half_width},{window_height}")    # 设置窗口大小为半屏
+options.set_argument(f"--window-position={right_position},0")          # 设置窗口位置在右侧
+options.set_argument("--force-device-scale-factor=1")                  # 强制设备缩放因子为1
 
 
 if HEADLESS_MODE:
@@ -614,6 +713,27 @@ try:
     activities = fetch_activities(session, onelap_cookies, latest_xoss_activity)
 
     logger.info(f"总共需要处理 {len(activities)} 个活动")
+    #分别是什么需要打印出来
+    for activity in activities:
+        # 将Unix时间戳转换为datetime对象进行格式化
+        try:
+            created_at = activity['created_at']
+            if isinstance(created_at, int):
+                # 秒级Unix时间戳
+                activity_time = datetime.fromtimestamp(created_at)
+            elif isinstance(created_at, str):
+                # ISO格式字符串
+                activity_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                activity_time = activity_time.replace(tzinfo=None)
+            else:
+                activity_time = None
+                
+            time_str = activity_time.strftime('%Y-%m-%d %H:%M:%S') if activity_time else "未知时间"
+            logger.info(f"时间: {time_str}, 距离: {activity['totalDistance']/1000}km, 爬升: {activity['elevation']}m")
+        except Exception as e:
+            logger.warning(f"时间格式化失败: {e}, created_at={activity.get('created_at')}")
+            logger.info(f"时间: {activity.get('created_at', '未知')}, 距离: {activity['totalDistance']/1000}km, 爬升: {activity['elevation']}m")
+
     
     # 在开始批量下载前，确保存储目录存在且为空
     ensure_storage_dir_clean(STORAGE_DIR)
