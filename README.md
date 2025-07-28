@@ -24,15 +24,18 @@ pip install DrissionPage requests bs4
 
 ## 配置说明
 
-1. 复制 `config.py` 文件并修改配置：
-```python
+1. 修改 `settings.ini` 配置文件中的两个平台的账号和密码
+```
+[onelap]
 # OneLap平台账号信息
-ONELAP_ACCOUNT = 'your_onelap_account'  # 您的OneLap账号
-ONELAP_PASSWORD = 'your_onelap_password'  # 您的OneLap密码
+username = 139xxxxxx
+password = xxxxxx
 
-# 行者平台账号信息
-XOSS_ACCOUNT = 'your_xoss_account'  # 您的行者账号
-XOSS_PASSWORD = 'your_xoss_password'  # 您的行者密码
+[xoss]
+# 行者平台账号信息  
+username = 139xxxxxx
+password = xxxxxx
+
 ```
 
 2. 其他可选配置：
