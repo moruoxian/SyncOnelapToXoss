@@ -602,11 +602,10 @@ def upload_files_to_giant(tab, valid_files):
                     # 构建文件路径列表
                     file_paths = []
                     for file_name in batch:
-                        if os.path.isabs(file_name):
+
                             file_paths.append(file_name)
-                        else:
-                            file_paths.append(os.path.join(STORAGE_DIR, file_name))
-                    
+
+                    logger.info(f"before file_paths: {file_paths}")                    
                     # 打印即将上传的文件列表
                     for file_path in file_paths:
                         logger.info(f"准备上传: {os.path.basename(file_path)}")
@@ -616,13 +615,14 @@ def upload_files_to_giant(tab, valid_files):
                         # 尝试传递多个文件路径
                         if len(file_paths) == 1:
                             # 单个文件
-                            upload_element.input(file_paths[0])
+                            upload_element.click.to_upload(file_paths[0])
                         else:
                             # 多个文件，使用换行符分隔的路径字符串
                             # 某些平台支持这种方式
-                            upload_element.input('\n'.join(file_paths))
+                            upload_element.click.to_upload('\n'.join(file_paths))
                         
                         logger.info(f"已选择 {len(file_paths)} 个文件进行上传")
+                        logger.info(f"file_paths: {file_paths}")
                         
                     except Exception as e:
                         logger.warning(f"批量选择文件失败，尝试逐个选择: {e}")
@@ -644,21 +644,29 @@ def upload_files_to_giant(tab, valid_files):
                     submit_button = None
                     submit_button = tab.ele('.btn_submit form_btn btn btn_color_1 btn_shadow btn_round', timeout=2)
                     if submit_button:
-                        logger.info(f"找到提交按钮: {selector}")
+                        logger.info("找到提交按钮")
 
 
                     
                     if submit_button:
                         submit_button.click()
                         logger.info("已点击捷安特上传提交按钮")
-                        # time.sleep(1)
+                        time.sleep(2)
                     else:
                         logger.warning("未找到提交按钮，文件可能已自动上传")
 
                     time.sleep(1)
-                    #缺少一个 btn ok的点击
-                    tab.ele('.btn ok').click()
-                    logger.info("已经提交成功了")
+                    # 点击确认按钮
+                    try:
+                        confirm_button = tab.ele('.btn ok', timeout=2)
+                        if confirm_button:
+                            confirm_button.click()
+                            logger.info("已点击确认按钮，提交成功")
+                        else:
+                            logger.info("未找到确认按钮，但提交流程已完成")
+                    except Exception as e:
+                        logger.warning(f"点击确认按钮失败: {e}")
+                        logger.info("提交流程完成")
 
                 except Exception as e:
                     logger.warning(f"查找提交按钮失败: {e}")
