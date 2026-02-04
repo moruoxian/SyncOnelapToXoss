@@ -38,6 +38,9 @@ def load_config_from_ini(config_file="settings.ini"):
         cfg['GIANT_ACCOUNT'] = config.get('giant', 'username', fallback='')
         cfg['GIANT_PASSWORD'] = config.get('giant', 'password', fallback='')
         cfg['GIANT_ENABLE_SYNC'] = config.getboolean('giant', 'enable_sync', fallback=False)
+        cfg['IGPSPORT_ACCOUNT'] = config.get('igpsport', 'username', fallback='')
+        cfg['IGPSPORT_PASSWORD'] = config.get('igpsport', 'password', fallback='')
+        cfg['IGPSPORT_ENABLE_SYNC'] = config.getboolean('igpsport', 'enable_sync', fallback=False)
         cfg['STORAGE_DIR'] = config.get('sync', 'storage_dir', fallback='./downloads')
         
         formats_str = config.get('sync', 'supported_formats', fallback='.fit,.gpx,.tcx')
@@ -66,6 +69,9 @@ if ini_config:
     GIANT_ACCOUNT = ini_config['GIANT_ACCOUNT']
     GIANT_PASSWORD = ini_config['GIANT_PASSWORD']
     GIANT_ENABLE_SYNC = ini_config['GIANT_ENABLE_SYNC']
+    IGPSPORT_ACCOUNT = ini_config['IGPSPORT_ACCOUNT']
+    IGPSPORT_PASSWORD = ini_config['IGPSPORT_PASSWORD']
+    IGPSPORT_ENABLE_SYNC = ini_config['IGPSPORT_ENABLE_SYNC']
     STORAGE_DIR = ini_config['STORAGE_DIR']
     SUPPORTED_FORMATS = ini_config['SUPPORTED_FORMATS']
     MAX_FILE_SIZE = ini_config['MAX_FILE_SIZE']
@@ -84,6 +90,10 @@ if ini_config:
         print("⚠️ 请在 settings.ini 中配置正确的捷安特账号")
     if GIANT_PASSWORD in ['xxxxxx', '']:
         print("⚠️ 请在 settings.ini 中配置正确的捷安特密码")
+    if IGPSPORT_ACCOUNT in ['139xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的iGPSport账号")
+    if IGPSPORT_PASSWORD in ['xxxxxx', '']:
+        print("⚠️ 请在 settings.ini 中配置正确的iGPSport密码")
 else:
     # 使用默认配置
     print("📄 使用默认配置")
@@ -96,6 +106,9 @@ else:
     GIANT_ACCOUNT = ''
     GIANT_PASSWORD = ''
     GIANT_ENABLE_SYNC = False
+    IGPSPORT_ACCOUNT = ''
+    IGPSPORT_PASSWORD = ''
+    IGPSPORT_ENABLE_SYNC = False
     STORAGE_DIR = './downloads'
     SUPPORTED_FORMATS = ['.fit', '.gpx', '.tcx']
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -353,6 +366,191 @@ def batch_files(file_list, batch_size):
     """将文件列表分批处理"""
     for i in range(0, len(file_list), batch_size):
         yield file_list[i:i + batch_size]
+
+def login_igpsport_browser(tab, account, password):
+    """使用浏览器登录iGPSport平台"""
+    logger.info("使用浏览器登录iGPSport平台")
+
+    try:
+        # 访问登录页面
+        logger.info("正在访问iGPSport登录页面...")
+        tab.get('https://login.passport.igpsport.cn/login?lang=zh-Hans')
+        time.sleep(3)
+
+        logger.info(f"iGPSport登录页面标题: {tab.title}")
+        logger.info(f"iGPSport当前URL: {tab.url}")
+
+        # 输入账号
+        try:
+            username_input = tab.ele('#basic_username', timeout=5)
+            if username_input:
+                username_input.clear()
+                username_input.input(account)
+                logger.info("已输入iGPSport账号信息")
+            else:
+                raise Exception("未找到用户名输入框")
+        except Exception as e:
+            logger.error(f"输入用户名失败: {e}")
+            raise
+
+        # 输入密码
+        try:
+            password_input = tab.ele('#basic_password', timeout=5)
+            if password_input:
+                password_input.clear()
+                password_input.input(password)
+                logger.info("已输入iGPSport密码信息")
+            else:
+                raise Exception("未找到密码输入框")
+        except Exception as e:
+            logger.error(f"输入密码失败: {e}")
+            raise
+
+        # 点击登录按钮
+        try:
+            login_selectors = [
+                '@type=submit',
+                '.ant-btn-primary',
+            ]
+
+            login_button = None
+            for selector in login_selectors:
+                try:
+                    login_button = tab.ele(selector, timeout=2)
+                    if login_button:
+                        logger.info(f"找到登录按钮: {selector}")
+                        break
+                except:
+                    continue
+
+            if login_button:
+                login_button.click()
+                logger.info("已点击iGPSport登录按钮")
+            else:
+                raise Exception("未找到登录按钮")
+
+        except Exception as e:
+            logger.error(f"点击登录按钮失败: {e}")
+            raise
+
+        # 等待登录完成
+        time.sleep(5)
+
+        # 检查登录是否成功
+        current_url = tab.url
+        logger.info(f"登录后URL: {current_url}")
+
+        # 如果还在登录页面，可能登录失败
+        if 'login' in current_url.lower():
+            try:
+                error_elements = tab.eles('.ant-form-item-explain-error')
+                for error_elem in error_elements:
+                    if error_elem.text and error_elem.text.strip():
+                        logger.error(f"iGPSport登录错误: {error_elem.text.strip()}")
+            except:
+                pass
+
+        # 获取cookies
+        cookies = tab.cookies()
+        session_cookies = {}
+        for cookie in cookies:
+            session_cookies[cookie['name']] = cookie['value']
+
+        logger.info("iGPSport登录成功！")
+        return session_cookies
+
+    except Exception as e:
+        logger.error(f"iGPSport浏览器登录失败: {e}")
+        raise
+
+def upload_files_to_igpsport(tab, valid_files):
+    """上传文件到iGPSport平台"""
+    logger.info("===== 开始上传文件到iGPSport平台 =====")
+
+    try:
+        # 访问运动历史页面
+        logger.info("正在访问运动历史页面...")
+        tab.get('https://app.igpsport.cn/sport/history/list')
+        time.sleep(3)
+
+        logger.info(f"当前页面URL: {tab.url}")
+        logger.info(f"当前页面标题: {tab.title}")
+
+        # iGPSport 限制：每次最多上传9个文件
+        max_files_per_batch = 9
+
+        # 分批上传
+        for batch_start in range(0, len(valid_files), max_files_per_batch):
+            batch_files = valid_files[batch_start:batch_start + max_files_per_batch]
+            logger.info(f"正在处理批次 {batch_start // max_files_per_batch + 1}，共 {len(batch_files)} 个文件")
+
+            # 点击"导入运动记录"按钮
+            import_btn = tab.ele('text:导入运动记录', timeout=5)
+            if not import_btn:
+                logger.error("未找到'导入运动记录'按钮")
+                return False
+
+            import_btn.click()
+            logger.info("已点击'导入运动记录'按钮")
+            time.sleep(2)
+
+            # 查找文件上传输入框
+            file_input = tab.ele('@type=file', timeout=5)
+            if not file_input:
+                logger.error("未找到文件上传输入框")
+                return False
+
+            logger.info("找到文件上传输入框")
+
+            # 选择文件（支持多选）
+            for file_path in batch_files:
+                try:
+                    abs_path = os.path.abspath(file_path)
+                    logger.info(f"正在选择文件: {os.path.basename(file_path)}")
+                    file_input.input(abs_path)
+                    time.sleep(1)
+                    logger.info(f"已选择: {os.path.basename(file_path)}")
+                except Exception as e:
+                    logger.error(f"选择文件失败 {file_path}: {e}")
+
+            # 等待文件列表加载
+            time.sleep(2)
+
+            # 点击"上传"按钮确认上传
+            try:
+                # 查找所有按钮，找到文本为"上传"的按钮
+                upload_confirm_btn = None
+                buttons = tab.eles('tag:button')
+                for btn in buttons:
+                    if btn.text and btn.text.strip() == '上传':
+                        upload_confirm_btn = btn
+                        break
+
+                if upload_confirm_btn:
+                    upload_confirm_btn.click()
+                    logger.info("已点击'上传'确认按钮")
+                    time.sleep(8)  # 等待上传完成
+                else:
+                    logger.warning("未找到上传确认按钮")
+            except Exception as e:
+                logger.error(f"点击上传按钮失败: {e}")
+
+            # 检查是否有成功提示，或等待模态框关闭
+            time.sleep(3)
+
+            # 如果还有下一批，需要等待页面恢复
+            if batch_start + max_files_per_batch < len(valid_files):
+                logger.info("等待页面恢复，准备下一批上传...")
+                tab.get('https://app.igpsport.cn/sport/history/list')
+                time.sleep(3)
+
+        logger.info("===== iGPSport上传流程完成 =====")
+        return True
+
+    except Exception as e:
+        logger.error(f"上传到iGPSport失败: {e}")
+        return False
+
 def fetch_activities(session, cookies_dict, latest_xoss_activity):
     """获取活动列表数据"""
     logger.info("获取活动列表数据")
@@ -1216,8 +1414,34 @@ except Exception as e:
     logger.error(f"捷安特平台上传过程出错: {e}")
     logger.info("继续执行后续步骤...")
 
-# === 步骤6：验证同步结果 ===
-logger.info("===== 步骤6：验证同步结果 =====")
+# === 步骤6：上传文件到iGPSport平台 ===
+logger.info("===== 步骤6：上传文件到iGPSport平台 =====")
+try:
+    # 检查是否启用了iGPSport同步
+    if not IGPSPORT_ENABLE_SYNC:
+        logger.info("iGPSport平台同步已禁用，跳过iGPSport平台上传")
+    elif not (IGPSPORT_ACCOUNT and IGPSPORT_PASSWORD and IGPSPORT_ACCOUNT not in ['139xxxxxx', ''] and IGPSPORT_PASSWORD not in ['xxxxxx', '']):
+        logger.info("未配置iGPSport账号或密码为默认值，跳过iGPSport平台上传")
+    else:
+        # 登录iGPSport平台
+        logger.info("开始登录iGPSport平台...")
+        igpsport_cookies = login_igpsport_browser(tab, IGPSPORT_ACCOUNT, IGPSPORT_PASSWORD)
+        logger.info("iGPSport登录完成，开始上传文件...")
+
+        # 上传文件到iGPSport平台
+        upload_success = upload_files_to_igpsport(tab, valid_files)
+
+        if upload_success:
+            logger.info("文件已成功上传到iGPSport平台")
+        else:
+            logger.warning("iGPSport平台上传出现问题，请手动检查")
+
+except Exception as e:
+    logger.error(f"iGPSport平台上传过程出错: {e}")
+    logger.info("继续执行后续步骤...")
+
+# === 步骤7：验证同步结果 ===
+logger.info("===== 步骤7：验证同步结果 =====")
 try:
     # 跳转到行者活动列表页面验证上传结果
     logger.info("跳转到行者活动列表页面验证同步结果...")
