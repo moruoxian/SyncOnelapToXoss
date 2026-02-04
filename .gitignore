@@ -3,3 +3,5 @@
 build/*
 dist/*
 *.spec
+.claude
+default.zip
