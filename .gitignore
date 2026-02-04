@@ -5,3 +5,5 @@ dist/*
 *.spec
 .claude
 default.zip
+build_release.py
+release/**
