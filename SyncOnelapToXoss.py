@@ -433,22 +433,25 @@ def login_igpsport_browser(tab, account, password):
             logger.error(f"点击登录按钮失败: {e}")
             raise
 
-        # 等待登录完成
-        time.sleep(5)
-
-        # 检查登录是否成功
-        current_url = tab.url
-        logger.info(f"登录后URL: {current_url}")
-
-        # 如果还在登录页面，可能登录失败
-        if 'login' in current_url.lower():
+        # 等待登录跳转
+        login_success = False
+        for i in range(4):
+            time.sleep(2)
+            if 'login' not in tab.url.lower():
+                login_success = True
+                logger.info("iGPSport 登录跳转成功")
+                break
+        
+        if not login_success:
+            logger.warning("登录后仍在登录页面，可能登录失败")
             try:
                 error_elements = tab.eles('.ant-form-item-explain-error')
                 for error_elem in error_elements:
                     if error_elem.text and error_elem.text.strip():
-                        logger.error(f"iGPSport登录错误: {error_elem.text.strip()}")
+                        logger.error(f"iGPSport登录错误提示: {error_elem.text.strip()}")
             except:
                 pass
+            return None # 明确返回失败
 
         # 获取cookies
         cookies = tab.cookies()
@@ -461,7 +464,7 @@ def login_igpsport_browser(tab, account, password):
 
     except Exception as e:
         logger.error(f"iGPSport浏览器登录失败: {e}")
-        raise
+        return None # 发生异常返回None
 
 def upload_files_to_igpsport(tab, valid_files):
     """上传文件到iGPSport平台"""
@@ -503,15 +506,18 @@ def upload_files_to_igpsport(tab, valid_files):
             logger.info("找到文件上传输入框")
 
             # 选择文件（支持多选）
-            for file_path in batch_files:
-                try:
-                    abs_path = os.path.abspath(file_path)
-                    logger.info(f"正在选择文件: {os.path.basename(file_path)}")
-                    file_input.input(abs_path)
-                    time.sleep(1)
-                    logger.info(f"已选择: {os.path.basename(file_path)}")
-                except Exception as e:
-                    logger.error(f"选择文件失败 {file_path}: {e}")
+            try:
+                # 获取所有文件的绝对路径列表
+                abs_paths = [os.path.abspath(f) for f in batch_files]
+                logger.info(f"正在选择以下文件（共{len(abs_paths)}个）: {[os.path.basename(p) for p in abs_paths]}")
+                
+                # 一次性输入所有文件路径
+                file_input.input(abs_paths)
+                time.sleep(2)
+                logger.info("文件选择完成")
+            except Exception as e:
+                logger.error(f"选择文件失败: {e}")
+                return False
 
             # 等待文件列表加载
             time.sleep(2)
@@ -950,9 +956,16 @@ try:
 
     logger.info("顽鹿登录完成，准备获取活动数据...")
 except Exception as e:
-    logger.critical(f"顽鹿登录失败: {e}")
-    tab.close()
-    exit(1)
+    logger.error(f"顽鹿登录或获取数据失败: {e}")
+    logger.info("尝试跳过顽鹿步骤，检查本地是否有可上传文件...")
+    # 不退出，继续往下执行，依靠后面的 get_valid_files 检查
+    
+    # 确保 session 关闭
+    if 'session' in locals() and session:
+        try:
+            session.close()
+        except:
+            pass
 
 # === 步骤2：转到行者平台登录 ===
 logger.info("===== 步骤2：转到行者平台登录 =====")
@@ -1027,9 +1040,15 @@ try:
                 tab.ele('button:contains("登录")').click()
                 logger.info("已点击登录按钮（文本方式）")
     # time.sleep(2)
+    time.sleep(1)
+    xoss_login_success = True
+    logger.info("行者登录步骤完成")
+
 except Exception as e:
-    logger.error(f"登录表单操作失败: {e}")
-    raise
+    logger.error(f"行者登录失败: {e}")
+    xoss_login_success = False
+    # 不抛出异常，继续执行后续步骤（可能只是跳过行者相关操作）
+
 # 等待页面加载完成后跳转到活动列表页面
 time.sleep(3)  # 等待登录完成
 
@@ -1042,204 +1061,217 @@ time.sleep(5)  # 增加等待时间，确保页面完全加载
 logger.info(f"当前页面URL: {tab.url}")
 logger.info(f"当前页面标题: {tab.title}")
 
+if 'login' in tab.url.lower():
+    logger.warning("跳转后仍在登录页面，行者登录失败")
+    xoss_login_success = False
+
+
+
 # 获取行者活动数据（从HTML表格中提取）
-try:
-    logger.info("开始从行者活动列表页面提取数据...")
-    xoss_activities = []
-    
-    # 1. 先定位表格 - 尝试多种选择器
-    table = None
-    table_selectors = [
-        '.table_box'
-    ]
-    
-    for selector in table_selectors:
-        try:
-            logger.info(f"尝试选择器: {selector}")
-            table = tab.ele(selector, timeout=3)
-            if table:
-                logger.info(f"成功找到表格，使用选择器: {selector}")
-                break
-        except Exception as e:
-            logger.debug(f"选择器 {selector} 失败: {e}")
-            continue
-    
-    if not table:
-        logger.error("未找到活动数据表格")
-        # 尝试查找页面中的所有表格
-        all_tables = tab.eles('table')
-        logger.info(f"页面中共找到 {len(all_tables)} 个表格元素")
-        for i, t in enumerate(all_tables):
-            try:
-                table_class = t.attr('class') or '无class'
-                logger.info(f"表格 {i+1}: class='{table_class}'")
-            except:
-                logger.info(f"表格 {i+1}: 无法获取属性")
-        raise Exception("页面中没有找到活动数据表格")
-    
-    logger.info("成功找到活动数据表格")
-    
-    # 等待表格数据加载
-    logger.info("等待表格数据异步加载...")
-    
-    # 使用BeautifulSoup解析表格HTML
+# 获取行者活动数据（从HTML表格中提取）
+if xoss_login_success:
     try:
-        table_html = table.html
-        logger.info(f"表格HTML长度: {len(table_html)}")
-        
-        # 使用BeautifulSoup解析HTML
-        soup = BeautifulSoup(table_html, 'html.parser')
-        
-        # 查找所有的表格行
-        rows = soup.find_all('tr')
-        logger.info(f"使用BeautifulSoup找到 {len(rows)} 行数据")
-        
-        # 解析表头
-        if len(rows) > 0:
-            header_row = rows[0]
-            headers = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
-            logger.info(f"表头: {headers}")
-        
-        # 解析数据行（跳过表头）
-        for i, row in enumerate(rows[1:], 1):
-            cells = row.find_all('td')
-            if len(cells) >= 8:  # 确保有足够的列
-                try:
-                    # 根据你提供的HTML结构提取数据：
-                    # 第0列：图片，第1列：类型，第2列：日期，第3列：标题
-                    # 第4列：距离，第5列：时间，第6列：爬升，第7列：负荷，第8列：其他
-                    
-                    # 提取各列数据
-                    sport_type = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                    activity_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                    title = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                    distance_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                    duration_text = cells[5].get_text(strip=True) if len(cells) > 5 else ""
-                    elevation_text = cells[6].get_text(strip=True) if len(cells) > 6 else ""
-                    load_text = cells[7].get_text(strip=True) if len(cells) > 7 else ""
-                    
-                    # 解析距离（移除单位km）
-                    distance = 0.0
-                    if 'km' in distance_text:
-                        try:
-                            distance = float(distance_text.replace('km', '').strip())
-                        except ValueError:
-                            logger.debug(f"无法解析距离: {distance_text}")
-                            distance = 0.0
-                    
-                    # 解析爬升（移除单位m）
-                    elevation = 0
-                    if 'm' in elevation_text:
-                        try:
-                            elevation = int(elevation_text.replace('m', '').strip())
-                        except ValueError:
-                            logger.debug(f"无法解析爬升: {elevation_text}")
-                            elevation = 0
-                    
-                    # 构造活动数据结构
-                    activity_data = {
-                        "workout_id": f"xoss_{activity_date}_{i}",  # 使用日期和索引生成ID
-                        "activity_date": activity_date,
-                        "title": title,
-                        "distance": distance,
-                        "duration": duration_text,
-                        "elevation": elevation,
-                        "sport_type": "cycling",  # 从HTML看主要是骑行活动
-                        "load": load_text
-                    }
-                    
-                    xoss_activities.append(activity_data)
-                    logger.info(f"提取活动 {i}: {activity_date} - {title} - {distance}km")
-                    
-                except Exception as e:
-                    logger.warning(f"解析第 {i} 行活动数据失败: {e}")
-                    continue
-            else:
-                logger.debug(f"第 {i} 行数据列数不足: {len(cells)}")
-                
-        logger.info(f"使用BeautifulSoup成功提取 {len(xoss_activities)} 个行者活动记录")
-        
-    except Exception as e:
-        logger.debug(f"使用BeautifulSoup解析表格HTML失败: {e}")
-        # 如果BeautifulSoup解析失败，设置为空列表
+        logger.info("开始从行者活动列表页面提取数据...")
         xoss_activities = []
     
-except Exception as e:
-    logger.error(f"获取行者活动数据失败: {e}")
-    xoss_activities = []
+        # 1. 先定位表格 - 尝试多种选择器
+        table = None
+        table_selectors = [
+            '.table_box'
+        ]
+    
+        for selector in table_selectors:
+            try:
+                logger.info(f"尝试选择器: {selector}")
+                table = tab.ele(selector, timeout=3)
+                if table:
+                    logger.info(f"成功找到表格，使用选择器: {selector}")
+                    break
+            except Exception as e:
+                logger.debug(f"选择器 {selector} 失败: {e}")
+                continue
+    
+        if not table:
+            logger.error("未找到活动数据表格")
+            # 尝试查找页面中的所有表格
+            all_tables = tab.eles('table')
+            logger.info(f"页面中共找到 {len(all_tables)} 个表格元素")
+            for i, t in enumerate(all_tables):
+                try:
+                    table_class = t.attr('class') or '无class'
+                    logger.info(f"表格 {i+1}: class='{table_class}'")
+                except:
+                    logger.info(f"表格 {i+1}: 无法获取属性")
+            raise Exception("页面中没有找到活动数据表格")
+    
+        logger.info("成功找到活动数据表格")
+    
+        # 等待表格数据加载
+        logger.info("等待表格数据异步加载...")
+    
+        # 使用BeautifulSoup解析表格HTML
+        try:
+            table_html = table.html
+            logger.info(f"表格HTML长度: {len(table_html)}")
+        
+            # 使用BeautifulSoup解析HTML
+            soup = BeautifulSoup(table_html, 'html.parser')
+        
+            # 查找所有的表格行
+            rows = soup.find_all('tr')
+            logger.info(f"使用BeautifulSoup找到 {len(rows)} 行数据")
+        
+            # 解析表头
+            if len(rows) > 0:
+                header_row = rows[0]
+                headers = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
+                logger.info(f"表头: {headers}")
+        
+            # 解析数据行（跳过表头）
+            for i, row in enumerate(rows[1:], 1):
+                cells = row.find_all('td')
+                if len(cells) >= 8:  # 确保有足够的列
+                    try:
+                        # 根据你提供的HTML结构提取数据：
+                        # 第0列：图片，第1列：类型，第2列：日期，第3列：标题
+                        # 第4列：距离，第5列：时间，第6列：爬升，第7列：负荷，第8列：其他
+                    
+                        # 提取各列数据
+                        sport_type = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                        activity_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                        title = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                        distance_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+                        duration_text = cells[5].get_text(strip=True) if len(cells) > 5 else ""
+                        elevation_text = cells[6].get_text(strip=True) if len(cells) > 6 else ""
+                        load_text = cells[7].get_text(strip=True) if len(cells) > 7 else ""
+                    
+                        # 解析距离（移除单位km）
+                        distance = 0.0
+                        if 'km' in distance_text:
+                            try:
+                                distance = float(distance_text.replace('km', '').strip())
+                            except ValueError:
+                                logger.debug(f"无法解析距离: {distance_text}")
+                                distance = 0.0
+                    
+                        # 解析爬升（移除单位m）
+                        elevation = 0
+                        if 'm' in elevation_text:
+                            try:
+                                elevation = int(elevation_text.replace('m', '').strip())
+                            except ValueError:
+                                logger.debug(f"无法解析爬升: {elevation_text}")
+                                elevation = 0
+                    
+                        # 构造活动数据结构
+                        activity_data = {
+                            "workout_id": f"xoss_{activity_date}_{i}",  # 使用日期和索引生成ID
+                            "activity_date": activity_date,
+                            "title": title,
+                            "distance": distance,
+                            "duration": duration_text,
+                            "elevation": elevation,
+                            "sport_type": "cycling",  # 从HTML看主要是骑行活动
+                            "load": load_text
+                        }
+                    
+                        xoss_activities.append(activity_data)
+                        logger.info(f"提取活动 {i}: {activity_date} - {title} - {distance}km")
+                    
+                    except Exception as e:
+                        logger.warning(f"解析第 {i} 行活动数据失败: {e}")
+                        continue
+                else:
+                    logger.debug(f"第 {i} 行数据列数不足: {len(cells)}")
+                
+            logger.info(f"使用BeautifulSoup成功提取 {len(xoss_activities)} 个行者活动记录")
+        
+        except Exception as e:
+            logger.debug(f"使用BeautifulSoup解析表格HTML失败: {e}")
+            # 如果BeautifulSoup解析失败，设置为空列表
+            xoss_activities = []
+    
+    except Exception as e:
+        logger.error(f"获取行者活动数据失败: {e}")
+        xoss_activities = []
 
-# 4. 对活动按时间排序，找到最新记录
-def parse_activity_date(activity):
-    """解析活动日期，返回datetime对象用于排序"""
-    try:
-        activity_date = activity.get('activity_date', '')
-        if not activity_date:
+    # 4. 对活动按时间排序，找到最新记录
+    def parse_activity_date(activity):
+        """解析活动日期，返回datetime对象用于排序"""
+        try:
+            activity_date = activity.get('activity_date', '')
+            if not activity_date:
+                return datetime.min
+        
+            # 尝试解析不同的日期格式
+            date_formats = [
+                '%Y-%m-%d',           # 2025-07-24
+                '%Y-%m-%d %H:%M:%S',  # 2025-07-24 14:30:00
+                '%Y-%m-%dT%H:%M:%S',  # 2025-07-24T14:30:00
+            ]
+        
+            for fmt in date_formats:
+                try:
+                    # 对于只有日期的情况，从标题中提取上午/下午信息
+                    if fmt == '%Y-%m-%d' and len(activity_date) == 10:
+                        title = activity.get('title', '')
+                        if '下午' in title:
+                            # 下午活动，设置为当天14:00
+                            date_obj = datetime.strptime(activity_date, fmt)
+                            return date_obj.replace(hour=14, minute=0, second=0)
+                        elif '上午' in title:
+                            # 上午活动，设置为当天08:00
+                            date_obj = datetime.strptime(activity_date, fmt)
+                            return date_obj.replace(hour=8, minute=0, second=0)
+                        elif '晚上' in title:
+                            # 晚上活动，设置为当天20:00
+                            date_obj = datetime.strptime(activity_date, fmt)
+                            return date_obj.replace(hour=19, minute=0, second=0)
+                        else:
+                            # 没有明确时间，设置为中午12:00
+                            date_obj = datetime.strptime(activity_date, fmt)
+                            return date_obj.replace(hour=12, minute=0, second=0)
+                    else:
+                        return datetime.strptime(activity_date[:len(fmt)], fmt)
+                except ValueError:
+                    continue
+                
+            logger.warning(f"无法解析活动日期: {activity_date}")
             return datetime.min
         
-        # 尝试解析不同的日期格式
-        date_formats = [
-            '%Y-%m-%d',           # 2025-07-24
-            '%Y-%m-%d %H:%M:%S',  # 2025-07-24 14:30:00
-            '%Y-%m-%dT%H:%M:%S',  # 2025-07-24T14:30:00
-        ]
-        
-        for fmt in date_formats:
-            try:
-                # 对于只有日期的情况，从标题中提取上午/下午信息
-                if fmt == '%Y-%m-%d' and len(activity_date) == 10:
-                    title = activity.get('title', '')
-                    if '下午' in title:
-                        # 下午活动，设置为当天14:00
-                        date_obj = datetime.strptime(activity_date, fmt)
-                        return date_obj.replace(hour=14, minute=0, second=0)
-                    elif '上午' in title:
-                        # 上午活动，设置为当天08:00
-                        date_obj = datetime.strptime(activity_date, fmt)
-                        return date_obj.replace(hour=8, minute=0, second=0)
-                    elif '晚上' in title:
-                        # 晚上活动，设置为当天20:00
-                        date_obj = datetime.strptime(activity_date, fmt)
-                        return date_obj.replace(hour=19, minute=0, second=0)
-                    else:
-                        # 没有明确时间，设置为中午12:00
-                        date_obj = datetime.strptime(activity_date, fmt)
-                        return date_obj.replace(hour=12, minute=0, second=0)
-                else:
-                    return datetime.strptime(activity_date[:len(fmt)], fmt)
-            except ValueError:
-                continue
-                
-        logger.warning(f"无法解析活动日期: {activity_date}")
-        return datetime.min
-        
-    except Exception as e:
-        logger.error(f"解析活动时间戳失败: {activity} - {e}")
-        return datetime.min
+        except Exception as e:
+            logger.error(f"解析活动时间戳失败: {activity} - {e}")
+            return datetime.min
 
-# 5. 按时间降序排序（最新的在前面）
-if xoss_activities:
-    xoss_activities.sort(key=parse_activity_date, reverse=True)
+    # 5. 按时间降序排序（最新的在前面）
+    if xoss_activities:
+        xoss_activities.sort(key=parse_activity_date, reverse=True)
     
-    # 获取最新的活动记录
-    latest_xoss_activity = xoss_activities[0]
-    latest_date = parse_activity_date(latest_xoss_activity)
+        # 获取最新的活动记录
+        latest_xoss_activity = xoss_activities[0]
+        latest_date = parse_activity_date(latest_xoss_activity)
     
-    logger.info(f"行者最新活动记录:")
-    logger.info(f"  - ID: {latest_xoss_activity.get('workout_id', 'N/A')}")
-    logger.info(f"  - 日期: {latest_xoss_activity.get('activity_date', 'N/A')}")
-    logger.info(f"  - 标题: {latest_xoss_activity.get('title', 'N/A')}")
-    logger.info(f"  - 距离: {latest_xoss_activity.get('distance', 0)}km")
-    logger.info(f"  - 解析时间: {latest_date}")
+        logger.info(f"行者最新活动记录:")
+        logger.info(f"  - ID: {latest_xoss_activity.get('workout_id', 'N/A')}")
+        logger.info(f"  - 日期: {latest_xoss_activity.get('activity_date', 'N/A')}")
+        logger.info(f"  - 标题: {latest_xoss_activity.get('title', 'N/A')}")
+        logger.info(f"  - 距离: {latest_xoss_activity.get('distance', 0)}km")
+        logger.info(f"  - 解析时间: {latest_date}")
 
-    # 显示前5条活动记录用于调试
-    logger.info("前5条活动记录（按时间降序）:")
-    for i, activity in enumerate(xoss_activities[:5]):
-        date_parsed = parse_activity_date(activity)
-        logger.info(f"  {i+1}. {activity['activity_date']} - {activity['title']} ({date_parsed})")
+        # 显示前5条活动记录用于调试
+        logger.info("前5条活动记录（按时间降序）:")
+        for i, activity in enumerate(xoss_activities[:5]):
+            date_parsed = parse_activity_date(activity)
+            logger.info(f"  {i+1}. {activity['activity_date']} - {activity['title']} ({date_parsed})")
         
+        else:
+            logger.warning("未找到任何行者活动记录，将同步所有OneLap活动")
+            latest_xoss_activity = None
+
 else:
-    logger.warning("未找到任何行者活动记录，将同步所有OneLap活动")
+    logger.warning("行者未登录成功，跳过获取活动记录，将同步所有OneLap活动")
     latest_xoss_activity = None
+
 
 # === 步骤3：开始执行 FIT 文件下载任务 ===
 logger.info("===== 步骤3：开始执行 FIT 文件下载任务 =====")
@@ -1290,10 +1322,15 @@ try:
 
     logger.info("===== FIT 文件下载完成 =====")
 except Exception as e:
-    logger.critical("主流程发生致命错误", exc_info=True)
-    tab.close()
-    session.close()
-    exit(1)
+    logger.error(f"FIT 文件下载任务失败: {e}")
+    logger.info("继续执行后续上传步骤...")
+    
+    # 确保 session 关闭
+    if 'session' in locals() and session:
+        try:
+            session.close()
+        except:
+            pass
 
 # 从文件夹中递归查找符合条件的文件
 def get_valid_files(folder_path):
@@ -1320,75 +1357,78 @@ if not valid_files:
 
 # === 步骤4：跳转到行者上传页面并分批上传文件 ===
 logger.info("===== 步骤4：开始上传文件到行者平台 =====")
-tab.get('https://www.imxingzhe.com/upload/fit')
-time.sleep(2)  # 等待页面加载
+if not xoss_login_success:
+    logger.warning("行者之前登录失败，跳过行者平台上传步骤")
+else:
+    tab.get('https://www.imxingzhe.com/upload/fit')
+    time.sleep(2)  # 等待页面加载
 
-for batch in batch_files(valid_files, MAX_FILES_PER_BATCH):
-    logger.info(f"正在上传批次文件，共 {len(batch)} 个文件")
+    for batch in batch_files(valid_files, MAX_FILES_PER_BATCH):
+        logger.info(f"正在上传批次文件，共 {len(batch)} 个文件")
     
-    try:
-        # 查找上传区域（行者平台的上传组件）
-        # 可能的选择器，按优先级尝试
-        upload_selectors = [
-            '.van-uploader__input'
-        ]
+        try:
+            # 查找上传区域（行者平台的上传组件）
+            # 可能的选择器，按优先级尝试
+            upload_selectors = [
+                '.van-uploader__input'
+            ]
         
-        upload_element = None
-        for selector in upload_selectors:
-            try:
-                upload_element = tab.ele(selector, timeout=2)
-                if upload_element:
-                    logger.info(f"找到上传元素: {selector}")
-                    break
-            except Exception:
-                logger.error(f"找不到行者里的上传按钮元素: {selector}")
-                continue
+            upload_element = None
+            for selector in upload_selectors:
+                try:
+                    upload_element = tab.ele(selector, timeout=2)
+                    if upload_element:
+                        logger.info(f"找到上传元素: {selector}")
+                        break
+                except Exception:
+                    logger.error(f"找不到行者里的上传按钮元素: {selector}")
+                    continue
         
-        if not upload_element:
-            # 如果找不到特定的上传组件，尝试通过文件输入框上传
-            try:
-                upload_element = tab.ele('@type=file', timeout=3)
-            except Exception:
-                logger.error("无法找到文件上传元素")
-                continue
+            if not upload_element:
+                # 如果找不到特定的上传组件，尝试通过文件输入框上传
+                try:
+                    upload_element = tab.ele('@type=file', timeout=3)
+                except Exception:
+                    logger.error("无法找到文件上传元素")
+                    continue
         
-        # 逐个上传文件
-        for file_path in batch:
-            try:
-                logger.info(f"正在上传文件: {os.path.basename(file_path)}")
-                if hasattr(upload_element, 'click.to_upload'):
-                    upload_element.click.to_upload(file_path)
-                else:
-                    upload_element.input(file_path)
-                time.sleep(0.5)  # 等待文件上传完成
-                logger.info(f"文件上传完成: {os.path.basename(file_path)}")
-            except Exception as e:
-                logger.error(f"上传文件失败 {file_path}: {e}")
-                continue
+            # 逐个上传文件
+            for file_path in batch:
+                try:
+                    logger.info(f"正在上传文件: {os.path.basename(file_path)}")
+                    if hasattr(upload_element, 'click.to_upload'):
+                        upload_element.click.to_upload(file_path)
+                    else:
+                        upload_element.input(file_path)
+                    time.sleep(0.5)  # 等待文件上传完成
+                    logger.info(f"文件上传完成: {os.path.basename(file_path)}")
+                except Exception as e:
+                    logger.error(f"上传文件失败 {file_path}: {e}")
+                    continue
         
-        # 查找并点击"上传"按钮 - 通过class定位第二个按钮
-        try: 
-            # 正确的CSS选择器：用点号连接多个class
-            upload_btn = tab.ele('.fit_btn van-button van-button--primary van-button--normal',index=2)
+            # 查找并点击"上传"按钮 - 通过class定位第二个按钮
+            try: 
+                # 正确的CSS选择器：用点号连接多个class
+                upload_btn = tab.ele('.fit_btn van-button van-button--primary van-button--normal',index=2)
 
-            if upload_btn:
-                upload_btn.click()
-                logger.info("通过文本内容成功点击上传按钮")
-                time.sleep(2)
-            else:
-                logger.error("无法找到行者的上传按钮")
+                if upload_btn:
+                    upload_btn.click()
+                    logger.info("通过文本内容成功点击上传按钮")
+                    time.sleep(2)
+                else:
+                    logger.error("无法找到行者的上传按钮")
                 
+                
+            except Exception as e:
+                logger.error(f"查找上传按钮失败: {e}")
                 
         except Exception as e:
-            logger.error(f"查找上传按钮失败: {e}")
-                
-    except Exception as e:
-        logger.error(f"批次上传失败: {e}")
-        continue
+            logger.error(f"批次上传失败: {e}")
+            continue
     
-    time.sleep(2)  # 批次间隔
+        time.sleep(2)  # 批次间隔
 
-# === 步骤5：上传文件到捷安特骑行平台 ===
+    # === 步骤5：上传文件到捷安特骑行平台 ===
 logger.info("===== 步骤5：上传文件到捷安特骑行平台 =====")
 try:
     # 检查是否启用了捷安特同步
@@ -1442,49 +1482,52 @@ except Exception as e:
 
 # === 步骤7：验证同步结果 ===
 logger.info("===== 步骤7：验证同步结果 =====")
-try:
-    # 跳转到行者活动列表页面验证上传结果
-    logger.info("跳转到行者活动列表页面验证同步结果...")
-    tab.get('https://www.imxingzhe.com/workouts/list')
-    time.sleep(5)  # 等待页面加载
-    
-    logger.info("请检查行者平台的活动列表，确认文件是否已成功同步")
-    logger.info("程序将在15秒后自动关闭，您可以手动查看最新的活动记录")
-    
-    # 尝试获取最新的活动数据进行对比
+if not xoss_login_success:
+    logger.info("由于行者未登录成功，跳过验证同步结果步骤")
+else:
     try:
-        table = tab.ele('.table_box', timeout=3)
-        if table:
-            table_html = table.html
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(table_html, 'html.parser')
-            rows = soup.find_all('tr')
-            
-            if len(rows) > 1:  # 有数据行
-                # 获取前3条最新活动
-                logger.info("==最后查看行者平台最新的活动记录如下==:")
-                for i, row in enumerate(rows[1:4], 1):  # 跳过表头，显示前3条
-                    cells = row.find_all('td')
-                    if len(cells) >= 4:
-                        activity_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                        title = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                        distance_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                        logger.info(f"  {i}. {activity_date} - {title} - {distance_text}")
+        # 跳转到行者活动列表页面验证上传结果
+        logger.info("跳转到行者活动列表页面验证同步结果...")
+        tab.get('https://www.imxingzhe.com/workouts/list')
+        time.sleep(5)  # 等待页面加载
+        
+        logger.info("请检查行者平台的活动列表，确认文件是否已成功同步")
+        logger.info("程序将在15秒后自动关闭，您可以手动查看最新的活动记录")
+        
+        # 尝试获取最新的活动数据进行对比
+        try:
+            table = tab.ele('.table_box', timeout=3)
+            if table:
+                table_html = table.html
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(table_html, 'html.parser')
+                rows = soup.find_all('tr')
+                
+                if len(rows) > 1:  # 有数据行
+                    # 获取前3条最新活动
+                    logger.info("==最后查看行者平台最新的活动记录如下==:")
+                    for i, row in enumerate(rows[1:4], 1):  # 跳过表头，显示前3条
+                        cells = row.find_all('td')
+                        if len(cells) >= 4:
+                            activity_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                            title = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                            distance_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+                            logger.info(f"  {i}. {activity_date} - {title} - {distance_text}")
+                else:
+                    logger.warning("未找到活动数据")
             else:
-                logger.warning("未找到活动数据")
-        else:
-            logger.warning("未找到活动表格，请手动检查页面")
+                logger.warning("未找到活动表格，请手动检查页面")
+        except Exception as e:
+            logger.debug(f"获取验证数据时出错: {e}")
+            logger.info("自动验证失败，请手动查看页面内容")
+        
+        # 给用户时间查看结果
+        time.sleep(15)
+        
     except Exception as e:
-        logger.debug(f"获取验证数据时出错: {e}")
-        logger.info("自动验证失败，请手动查看页面内容")
-    
-    # 给用户时间查看结果
-    time.sleep(15)
-    
-except Exception as e:
-    logger.error(f"验证步骤失败: {e}")
-    logger.info("请手动访问行者平台确认同步结果")
-    time.sleep(5)
+        logger.error(f"验证步骤失败: {e}")
+        logger.info("请手动访问行者平台确认同步结果")
+        time.sleep(5)
 
 # === 任务完成，关闭浏览器和会话 ===
 logger.info("===== 任务执行完成 =====")
