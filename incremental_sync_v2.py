@@ -183,10 +183,11 @@ class IGPSportClient:
 class OneLapClient:
     """OneLap 平台客户端"""
     
-    def __init__(self, username, password):
+    def __init__(self, username, password, tab=None, owns_tab=True):
         self.username = username
         self.password = password
-        self.tab = None
+        self.tab = tab
+        self.owns_tab = owns_tab
     
     def login(self):
         """登录 OneLap"""
@@ -196,11 +197,20 @@ class OneLapClient:
             logger.error("[OneLap] 请先安装 DrissionPage")
             return False
         
+        if self.tab:
+            logger.info("[OneLap] 复用已有浏览器实例")
+            return True
+
         logger.info("[OneLap] 启动浏览器...")
         
         options = ChromiumOptions()
-        options.set_paths(browser_path='/usr/bin/google-chrome')
-        options.headless(True)
+        options.auto_port()
+        if os.name != 'nt':
+            for candidate in ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']:
+                if os.path.exists(candidate):
+                    options.set_paths(browser_path=candidate)
+                    break
+        options.headless()
         options.set_argument("--no-sandbox")
         options.set_argument("--disable-dev-shm-usage")
         options.set_argument("--disable-gpu")
@@ -208,6 +218,7 @@ class OneLapClient:
         
         try:
             self.tab = ChromiumPage(options)
+            self.owns_tab = True
         except Exception as e:
             logger.error(f"[OneLap] 浏览器启动失败: {e}")
             return False
@@ -325,7 +336,7 @@ class OneLapClient:
     
     def close(self):
         """关闭浏览器"""
-        if self.tab:
+        if self.tab and self.owns_tab:
             try:
                 self.tab.close()
             except:
@@ -341,9 +352,13 @@ class IncrementalSync:
             config['igpsport']['username'],
             config['igpsport']['password']
         )
+        onelap_tab = config.get('onelap', {}).get('tab')
+        onelap_owns_tab = config.get('onelap', {}).get('owns_tab', True)
         self.onelap = OneLapClient(
             config['onelap']['username'],
-            config['onelap']['password']
+            config['onelap']['password'],
+            tab=onelap_tab,
+            owns_tab=onelap_owns_tab
         )
         self.download_dir = './incremental_sync'
         os.makedirs(self.download_dir, exist_ok=True)
