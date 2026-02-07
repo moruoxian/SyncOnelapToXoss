@@ -145,9 +145,10 @@ python3 SyncOnelapToXoss.py
 ### 场景 A：OneLap 数据同步到其他平台 (默认)
 *   **用途**：将顽鹿(OneLap)的骑行记录同步到行者、捷安特或 iGPSport。
 *   **配置**：
-    *   `[onelap]` & `[xoss]`: 填入账号密码（必须）。
-    *   `[giant]`: `enable_sync = true` (如需同步到捷安特)。
-    *   `[igpsport]`: `enable_sync = true` (如需同步到 iGPSport)。
+    *   `[onelap]`: 填入账号密码（必须）。
+    *   `[xoss]`: 填入账号密码（如不同步到行者，可不填）。
+    *   `[giant]`: 填入账号密码并将 `enable_sync = true` (如不同步到捷安特，可不填)。
+    *   `[igpsport]`: 填入账号密码并将 `enable_sync = true` (如不同步到 iGPSport，可不填)。
 
 ### 场景 B：iGPSport 数据反向同步到 OneLap (新功能)
 *   **用途**：当 iGPSport 记录比 OneLap 全时，将缺失的记录补录回 OneLap。
