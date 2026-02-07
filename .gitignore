@@ -1,0 +1,56 @@
+# =============================================================================
+# Git 忽略文件配置
+# 这些文件不会被提交到版本控制
+# =============================================================================
+
+# 敏感配置文件（包含真实账号密码）
+settings.ini
+
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE 配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件和目录
+downloads/
+download_igps/
+incremental_sync/
+incremental_test/
+/tmp/
+*.tmp
+*.log
+
+# 测试脚本（开发调试用的）
+test_*.py
+analyze_*.py
+*_test.py
+*_analysis.md
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+*.spec
+*.zip
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 其他
+*.bak
+*.old

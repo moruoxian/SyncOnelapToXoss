@@ -1,0 +1,74 @@
+# OneLap到行者数据同步工具配置文件示例
+# 使用说明：
+# 1. 复制本文件为 settings.ini（cp settings.ini.example settings.ini）
+# 2. 修改 settings.ini 中的账号密码为您的真实信息
+# 3. 不要提交 settings.ini 到 Git（已添加到 .gitignore）
+
+[app]
+# 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level = INFO
+# 浏览器无头模式 (true=无头模式, false=显示浏览器窗口)
+headless_mode = true
+
+[onelap]
+# OneLap平台账号信息
+username = 13800138000
+password = your_password_here
+
+[xoss]
+# 行者平台账号信息  
+username = 13800138000
+password = your_password_here
+
+[giant]
+# 捷安特骑行平台账号信息
+username = 13800138000
+password = your_password_here
+# 是否启用捷安特平台同步 (true=启用, false=禁用)
+enable_sync = false
+
+[igpsport]
+# iGPSPORT平台账号信息
+username = 13800138000
+password = your_password_here
+# 是否启用iGPSPORT平台同步 (true=启用, false=禁用)
+enable_sync = false
+
+[sync]
+# 同步相关配置
+storage_dir = ./downloads
+supported_formats = .fit,.gpx,.tcx
+max_file_size_mb = 50
+max_files_per_batch = 5
+
+# ========== iGPSport → OneLap 反向增量同步配置 ==========
+# 
+# 功能说明：将 iGPSport 中比 OneLap 新的骑行记录自动同步到 OneLap
+# 适用场景：iGPSport 记录比 OneLap 多，需要补录数据到 OneLap
+# 
+[igpsport_to_onelap]
+# 是否启用反向同步 (true=启用, false=禁用)
+enable = false
+
+# 同步模式: auto=智能增量(推荐), full=全量同步
+mode = auto
+
+# 同步策略: time_based=基于时间戳比对
+time_based = time_based
+
+[browser]
+# 浏览器相关配置
+timeout = 10
+retry_count = 3
+user_agent = Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+
+[urls]
+# 平台URL配置
+onelap_login = https://www.onelap.cn/login.html
+onelap_activities = http://u.onelap.cn/analysis/list
+xoss_login = https://www.imxingzhe.com/login
+xoss_upload = https://www.imxingzhe.com/upload/fit
+xoss_workouts = https://www.imxingzhe.com/workouts/list
+giant_login = https://ridelife.giant.com.cn/web/login.html
+igpsport_login = https://login.passport.igpsport.cn/login?lang=zh-Hans
+igpsport_upload = https://www.igpsport.cn/upload
