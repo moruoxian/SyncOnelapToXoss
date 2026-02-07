@@ -104,21 +104,58 @@ python3 SyncOnelapToXoss.py
 ==========================================
 ```
 
-## 📋 基本使用方法
+## 📖 使用指南
 
-1. 复制配置示例：
-   ```bash
-   cp settings.ini.example settings.ini
-   ```
+### 1. 快速开始 (Windows 用户)
 
-2. 编辑 `settings.ini` 配置各平台账号密码
+如果您下载的是 Windows 打包版本 (`.zip`)：
 
-3. 运行程序：
-   ```bash
-   python3 SyncOnelapToXoss.py
-   ```
+1.  **解压文件**：将压缩包解压到一个文件夹中。
+2.  **配置账号**：
+    *   找到 `settings.ini` 文件。
+    *   用记事本打开，填入您的 OneLap、行者、捷安特或 iGPSport 账号密码。
+    *   **注意**：`enable_sync = true` 表示启用该平台的同步。
+3.  **运行程序**：
+    *   双击 `SyncOnelapToXoss.exe`。
+    *   程序会自动打开浏览器进行操作，**请勿关闭该浏览器窗口**，等待程序运行结束。
 
-## ⚙️ 配置说明
+### 2. 开发者指南 (源码运行)
+
+如果您是开发者或希望通过源码运行：
+
+1.  **环境准备**：
+    *   Python 3.7+
+    *   Chrome 浏览器
+2.  **安装依赖**：
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **配置文件**：
+    *   复制模板：`cp settings.ini.example settings.ini` (Windows 下手动复制重命名即可)
+    *   编辑 `settings.ini` 填入账号信息。
+4.  **运行脚本**：
+    ```bash
+    python SyncOnelapToXoss.py
+    ```
+
+## ⚙️ 业务场景与配置
+
+本工具支持多种同步场景，请根据需求修改 `settings.ini`：
+
+### 场景 A：OneLap 数据同步到其他平台 (默认)
+*   **用途**：将顽鹿(OneLap)的骑行记录同步到行者、捷安特或 iGPSport。
+*   **配置**：
+    *   `[onelap]` & `[xoss]`: 填入账号密码（必须）。
+    *   `[giant]`: `enable_sync = true` (如需同步到捷安特)。
+    *   `[igpsport]`: `enable_sync = true` (如需同步到 iGPSport)。
+
+### 场景 B：iGPSport 数据反向同步到 OneLap (新功能)
+*   **用途**：当 iGPSport 记录比 OneLap 全时，将缺失的记录补录回 OneLap。
+*   **配置**：
+    *   `[igpsport_to_onelap]`: 设置 `enable = true`。
+    *   建议保持 `mode = auto` (智能增量模式)，只同步新数据。
+
+## ⚙️ 详细配置说明
 
 编辑 `settings.ini`：
 
