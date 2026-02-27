@@ -1,22 +1,94 @@
 # SyncOnelapToXoss 使用说明
 
+本工具支持两类同步方向：
+- OneLap → 其他平台（行者 / 捷安特 / iGPSport）
+- iGPSport → OneLap（反向增量补录）
+
 ## Windows（打包版）快速开始
 
-1) 解压压缩包到任意目录
+1) 解压压缩包到任意目录（建议全英文路径，避免权限问题）
 
-2) 配置账号
-   - 打开 settings.ini
-   - 填入 OneLap 账号密码（必填）
-   - 同步到 iGPSport：将 [igpsport] enable_sync = true
-   - iGPSport → OneLap 反向同步：将 [igpsport_to_onelap] enable = true
-   - 只想全量下载 OneLap：将 [sync] onelap_full_sync = true
+2) 配置文件
+   - settings.ini：实际运行配置（你需要填写真实账号密码）
+   - settings.ini.example：示例模板（可用来对照/复制）
 
-3) 运行程序
+3) 填写账号密码
+   - OneLap 必填：[onelap] username/password
+   - 其他平台按需填写账号密码并打开开关（见下方场景）
+
+4) 运行程序
    - 双击 SyncOnelapToXoss.exe
    - 程序会自动打开浏览器进行登录与上传，请不要关闭浏览器窗口，等待程序结束
 
-## 注意事项
+## 常用场景与配置
 
-- iGPSport 每次最多导入 9 个文件，程序会自动分批上传
+### 场景 A：OneLap → iGPSport（默认增量）
+
+用途：只同步“比基准更新”的 OneLap 记录到 iGPSport（避免重复上传）。
+
+```ini
+[igpsport]
+enable_sync = true
+```
+
+说明：
+- 程序会在步骤2尽量从其它平台读取“最新记录时间”作为同步基准，通常表现为增量。
+- 如果无法获取任何基准（未配置/登录失败/禁用），会退化为全量。
+
+### 场景 B：OneLap 全量下载并同步（强制全量）
+
+用途：不管任何平台有没有基准，都强制全量拉取 OneLap 活动用于同步。
+
+```ini
+[sync]
+onelap_full_sync = true
+```
+
+### 场景 C：不需要行者（XOSS）
+
+用途：明确禁用行者同步，避免步骤4/步骤7进入行者流程。
+
+```ini
+[xoss]
+enable_sync = false
+```
+
+### 场景 D：iGPSport → OneLap（反向增量补录）
+
+用途：当 iGPSport 记录比 OneLap 多时，把 iGPSport 中更新的记录补录回 OneLap。
+
+```ini
+[igpsport_to_onelap]
+enable = true
+mode = auto
+strategy = time_based
+```
+
+说明：
+- mode=auto：优先增量补录；当 OneLap 为空或无法获取基准时会自动退化为更大范围同步。
+
+## 下载与文件目录
+
+- 默认下载目录：settings.ini 中 [sync] storage_dir
+- 支持文件类型：supported_formats（默认 .fit/.gpx/.tcx）
+
+## 常见问题（FAQ）
+
+### 1) iGPSport 上传数量限制
+
+- iGPSport 网页端通常一次最多导入 9 个文件
+- 程序会自动分批上传
+
+### 2) 浏览器登录相关
+
+- 首次运行需要浏览器完成登录（可能遇到验证码/短信验证）
+- 登录时请不要关闭自动打开的浏览器窗口
+
+### 3) 增量同步端口问题
+
+- 程序已使用 auto_port 方式启动浏览器，避免默认 9222 端口冲突
+
+## 安全提示
+
 - settings.ini 含账号密码，请勿提交到公开仓库或分享给他人
-
+- 建议只在本机保存配置文件，并定期更换平台密码
