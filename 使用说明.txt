@@ -1,0 +1,22 @@
+# SyncOnelapToXoss 使用说明
+
+## Windows（打包版）快速开始
+
+1) 解压压缩包到任意目录
+
+2) 配置账号
+   - 打开 settings.ini
+   - 填入 OneLap 账号密码（必填）
+   - 同步到 iGPSport：将 [igpsport] enable_sync = true
+   - iGPSport → OneLap 反向同步：将 [igpsport_to_onelap] enable = true
+   - 只想全量下载 OneLap：将 [sync] onelap_full_sync = true
+
+3) 运行程序
+   - 双击 SyncOnelapToXoss.exe
+   - 程序会自动打开浏览器进行登录与上传，请不要关闭浏览器窗口，等待程序结束
+
+## 注意事项
+
+- iGPSport 每次最多导入 9 个文件，程序会自动分批上传
+- settings.ini 含账号密码，请勿提交到公开仓库或分享给他人
+

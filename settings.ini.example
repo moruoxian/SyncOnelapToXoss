@@ -1,0 +1,40 @@
+# OneLap到多平台数据同步工具配置文件（示例）
+
+[app]
+name = OneLap到多平台数据同步工具
+version = 1.2.4
+log_level = INFO
+headless_mode = false
+
+[onelap]
+username = 13800138000
+password = your_password_here
+
+[xoss]
+username = 13800138000
+password = your_password_here
+enable_sync = false
+
+[giant]
+username = 13800138000
+password = your_password_here
+enable_sync = false
+
+[igpsport]
+username = 13800138000
+password = your_password_here
+enable_sync = false
+
+[sync]
+storage_dir = ./downloads
+supported_formats = .fit,.gpx,.tcx
+max_file_size_mb = 50
+max_files_per_batch = 5
+# OneLap 是否强制全量下载 (true=全量下载并忽略各平台基准, false=按基准增量下载)
+onelap_full_sync = false
+
+[igpsport_to_onelap]
+enable = false
+mode = auto
+strategy = time_based
+

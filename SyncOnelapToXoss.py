@@ -60,6 +60,7 @@ def load_config_from_ini(config_file="settings.ini"):
         
         cfg['MAX_FILE_SIZE'] = config.getint('sync', 'max_file_size_mb', fallback=50) * 1024 * 1024
         cfg['MAX_FILES_PER_BATCH'] = config.getint('sync', 'max_files_per_batch', fallback=5)
+        cfg['ONELAP_FULL_SYNC'] = config.getboolean('sync', 'onelap_full_sync', fallback=False)
         
         # ===== 新增：iGPSport → OneLap 反向增量同步配置 =====
         # 使用独立的配置节 [igpsport_to_onelap]
@@ -95,6 +96,7 @@ if ini_config:
     SUPPORTED_FORMATS = ini_config['SUPPORTED_FORMATS']
     MAX_FILE_SIZE = ini_config['MAX_FILE_SIZE']
     MAX_FILES_PER_BATCH = ini_config['MAX_FILES_PER_BATCH']
+    ONELAP_FULL_SYNC = ini_config.get('ONELAP_FULL_SYNC', False)
     
     # ===== 新增：读取 iGPSport → OneLap 反向增量同步配置 =====
     IGPSPORT_TO_ONELAP_ENABLE = ini_config.get('IGPSPORT_TO_ONELAP_ENABLE', False)
@@ -139,6 +141,7 @@ else:
     SUPPORTED_FORMATS = ['.fit', '.gpx', '.tcx']
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
     MAX_FILES_PER_BATCH = 5
+    ONELAP_FULL_SYNC = False
     
     # ===== 新增：iGPSport → OneLap 反向增量同步默认配置 =====
     IGPSPORT_TO_ONELAP_ENABLE = False      # 默认禁用反向同步
@@ -1426,6 +1429,10 @@ if not latest_sync_activity:
     logger.warning("⚠️ 未能从任何平台获取最新活动记录，将执行全量同步！")
 else:
     logger.info(f"✅ 同步基准确定: {sync_benchmark_platform}, 最新时间: {latest_sync_activity['activity_date']}")
+
+if ONELAP_FULL_SYNC:
+    logger.info("✅ 已启用 OneLap 全量下载开关，将忽略同步基准，执行全量同步")
+    latest_sync_activity = None
 
 
 # === 步骤3：开始执行 FIT 文件下载任务 ===

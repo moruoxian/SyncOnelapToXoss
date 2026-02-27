@@ -47,6 +47,8 @@ build/
 *.egg-info/
 *.spec
 *.zip
+_release_full/
+_release_*/
 
 # 操作系统文件
 .DS_Store
