@@ -2,7 +2,7 @@
 
 [app]
 name = OneLap到多平台数据同步工具
-version = 1.2.4
+version = 1.2.5
 log_level = INFO
 headless_mode = false
 

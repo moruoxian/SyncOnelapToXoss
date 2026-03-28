@@ -5,7 +5,9 @@
 1) 解压压缩包到任意目录
 
 2) 配置账号
-   - 打开 settings.ini
+   - settings.ini 是实际运行配置
+   - settings.ini.example 是示例模板
+   - 如果 settings.ini 被覆盖，可复制 settings.ini.example 后重命名为 settings.ini
    - 填入 OneLap 账号密码（必填）
    - 同步到 iGPSport：将 [igpsport] enable_sync = true
    - iGPSport → OneLap 反向同步：将 [igpsport_to_onelap] enable = true
