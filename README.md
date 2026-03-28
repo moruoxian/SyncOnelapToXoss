@@ -112,7 +112,8 @@ python3 SyncOnelapToXoss.py
 
 1.  **解压文件**：将压缩包解压到一个文件夹中。
 2.  **配置账号**：
-    *   找到 `settings.ini` 文件。
+    *   `settings.ini` 是实际运行配置，`settings.ini.example` 是示例模板。
+    *   如果 `settings.ini` 被覆盖，可复制 `settings.ini.example` 后重命名为 `settings.ini`。
     *   用记事本打开，填入您的 OneLap、行者、捷安特或 iGPSport 账号密码。
     *   **注意**：`enable_sync = true` 表示启用该平台的同步。
 3.  **运行程序**：

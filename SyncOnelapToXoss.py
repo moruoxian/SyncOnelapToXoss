@@ -456,10 +456,37 @@ def login_igpsport_browser(tab, account, password):
         logger.info(f"iGPSport登录页面标题: {tab.title}")
         logger.info(f"iGPSport当前URL: {tab.url}")
 
+        # 显式切到“密码登录”tab（如果存在）
+        try:
+            pwd_tab = tab.ele('text:密码登录', timeout=2)
+            if pwd_tab:
+                pwd_tab.click()
+                logger.info("已切换到iGPSport密码登录")
+                time.sleep(0.5)
+        except Exception:
+            pass
+
         # 输入账号
         try:
-            username_input = tab.ele('#basic_username', timeout=5)
+            username_selectors = [
+                '#username',
+                '#basic_username',
+                '@id=username',
+                '@name=username',
+                '@type=text',
+                '@placeholder=请输入正确的手机号/邮箱'
+            ]
+            username_input = None
+            for selector in username_selectors:
+                try:
+                    username_input = tab.ele(selector, timeout=2)
+                    if username_input:
+                        logger.info(f"找到iGPSport用户名输入框: {selector}")
+                        break
+                except Exception:
+                    continue
             if username_input:
+                username_input.click()
                 username_input.clear()
                 username_input.input(account)
                 logger.info("已输入iGPSport账号信息")
@@ -471,8 +498,25 @@ def login_igpsport_browser(tab, account, password):
 
         # 输入密码
         try:
-            password_input = tab.ele('#basic_password', timeout=5)
+            password_selectors = [
+                '#password',
+                '#basic_password',
+                '@id=password',
+                '@name=password',
+                '@type=password',
+                '@placeholder=请输入密码'
+            ]
+            password_input = None
+            for selector in password_selectors:
+                try:
+                    password_input = tab.ele(selector, timeout=2)
+                    if password_input:
+                        logger.info(f"找到iGPSport密码输入框: {selector}")
+                        break
+                except Exception:
+                    continue
             if password_input:
+                password_input.click()
                 password_input.clear()
                 password_input.input(password)
                 logger.info("已输入iGPSport密码信息")
@@ -482,10 +526,17 @@ def login_igpsport_browser(tab, account, password):
             logger.error(f"输入密码失败: {e}")
             raise
 
+        # 监听登录请求
+        try:
+            tab.listen.start('service/auth/account/login')
+        except Exception as e:
+            logger.warning(f"iGPSport登录监听启动失败: {e}")
+
         # 点击登录按钮
         try:
             login_selectors = [
                 '@type=submit',
+                '.submit',
                 '.ant-btn-primary',
             ]
 
@@ -500,7 +551,7 @@ def login_igpsport_browser(tab, account, password):
                     continue
 
             if login_button:
-                login_button.click()
+                login_button.click(by_js=False)
                 logger.info("已点击iGPSport登录按钮")
             else:
                 raise Exception("未找到登录按钮")
@@ -509,15 +560,59 @@ def login_igpsport_browser(tab, account, password):
             logger.error(f"点击登录按钮失败: {e}")
             raise
 
-        # 等待登录完成
-        time.sleep(5)
+        # 优先根据登录接口响应判断成功
+        login_ok = False
+        session_cookies = {}
+        try:
+            packets = list(tab.listen.steps(timeout=8))
+            for pkt in packets:
+                try:
+                    if 'service/auth/account/login' not in pkt.url:
+                        continue
+                    body = getattr(pkt.response, 'body', None)
+                    if isinstance(body, dict) and body.get('code') == 0 and body.get('data', {}).get('access_token'):
+                        token_type = body['data'].get('token_type', 'Bearer')
+                        access_token = body['data'].get('access_token')
+                        refresh_token = body['data'].get('refresh_token')
+                        # 写入 localStorage，兼容前端基于 token 的登录态
+                        try:
+                            tab.run_js(f"localStorage.setItem('token_type', {token_type!r});")
+                            tab.run_js(f"localStorage.setItem('access_token', {access_token!r});")
+                            if refresh_token:
+                                tab.run_js(f"localStorage.setItem('refresh_token', {refresh_token!r});")
+                        except Exception as e:
+                            logger.warning(f"写入iGPSport localStorage失败: {e}")
+                        session_cookies = {
+                            'token_type': token_type,
+                            'access_token': access_token,
+                        }
+                        if refresh_token:
+                            session_cookies['refresh_token'] = refresh_token
+                        login_ok = True
+                        logger.info("iGPSport登录接口返回成功，已获取 access_token")
+                        break
+                except Exception as e:
+                    logger.debug(f"处理iGPSport登录响应失败: {e}")
+        except Exception as e:
+            logger.warning(f"读取iGPSport登录监听结果失败: {e}")
 
-        # 检查登录是否成功
+        # 等待页面状态稳定
+        time.sleep(2)
         current_url = tab.url
         logger.info(f"登录后URL: {current_url}")
 
-        # 如果还在登录页面，可能登录失败
-        if 'login' in current_url.lower():
+        # 如接口未判定成功，再退回 cookies/URL 检查
+        if not login_ok:
+            try:
+                cookies = tab.cookies()
+                for cookie in cookies:
+                    session_cookies[cookie['name']] = cookie['value']
+                if session_cookies and 'login' not in current_url.lower():
+                    login_ok = True
+            except Exception:
+                pass
+
+        if not login_ok:
             try:
                 error_elements = tab.eles('.ant-form-item-explain-error')
                 for error_elem in error_elements:
@@ -525,12 +620,7 @@ def login_igpsport_browser(tab, account, password):
                         logger.error(f"iGPSport登录错误: {error_elem.text.strip()}")
             except:
                 pass
-
-        # 获取cookies
-        cookies = tab.cookies()
-        session_cookies = {}
-        for cookie in cookies:
-            session_cookies[cookie['name']] = cookie['value']
+            raise Exception("iGPSport登录请求已发送，但未建立可用登录态")
 
         logger.info("iGPSport登录成功！")
         return session_cookies
@@ -771,47 +861,108 @@ def upload_files_to_igpsport(tab, valid_files):
     logger.info("===== 开始上传文件到iGPSport平台 =====")
 
     try:
-        # 访问运动历史页面
-        logger.info("正在访问运动历史页面...")
-        tab.get('https://app.igpsport.cn/sport/history/list')
-        time.sleep(3)
+        # 访问运动记录页面
+        logger.info("正在访问iGPSport运动记录页面...")
+        if '/user/home' in tab.url:
+            logger.info("当前在主页，点击'运动记录'进入记录页面")
+            try:
+                tab.ele('text:运动记录', timeout=3).click()
+                time.sleep(4)
+            except Exception as e:
+                logger.error(f"点击'运动记录'按钮失败: {e}")
+                raise
+        elif '/sport/record' not in tab.url:
+            logger.info("直接访问运动记录页面")
+            tab.get('https://app.igpsport.cn/sport/record')
+            time.sleep(4)
+        else:
+            logger.info("已在运动记录页面")
 
         logger.info(f"当前页面URL: {tab.url}")
         logger.info(f"当前页面标题: {tab.title}")
 
         # iGPSport 限制：每次最多上传9个文件
         max_files_per_batch = 9
+        logger.info("定位导入按钮和文件输入框")
+
+        # 找到并点击“导入运动记录”按钮
+        import_btn = tab.ele('text:导入运动记录', timeout=5)
+        logger.info(f"导入按钮类型: {import_btn.tag}")
+        import_btn.click(by_js=True)
+        logger.info("导入按钮点击成功，等待模态框加载")
+        time.sleep(4)
+
+        # 等待模态框内容出现
+        try:
+            batch_ele = tab.ele('text:批量导入运动', timeout=5)
+            logger.info("批量导入运动模态框加载成功")
+        except Exception as e:
+            logger.error(f"模态框加载失败: {e}")
+            raise
+
+        # 在模态框中找到隐藏的文件输入框
+        file_input = None
+        import re
+        html = tab.html
+        pattern = re.compile(r'<input[^>]*>', re.IGNORECASE)
+        matches = pattern.findall(html)
+        upload_indices = []
+        for i, match in enumerate(matches):
+            s = match.lower()
+            if 'type="file"' in s or 'name="file"' in s or 'accept=".fit' in s or 'accept=".gpx' in s or 'accept=".tcx' in s:
+                logger.info(f"HTML中找到文件上传框 (索引: {i})")
+                logger.info(f"  {match}")
+                upload_indices.append(i)
+        
+        # 现在尝试定位到第10个元素
+        if upload_indices:
+            target_index = upload_indices[0]
+            try:
+                # 获取第 target_index 个 input 元素
+                file_input = tab.eles('input')[target_index]
+                logger.info(f"成功定位到第 {target_index} 个输入框")
+                ele_style = file_input.attr('style')
+                logger.info(f"  type={file_input.attr('type')}, name={file_input.attr('name')}, accept={file_input.attr('accept')}, style={ele_style}")
+                # 如果是隐藏的，通过 JavaScript 显示它，以便后续操作
+                if ele_style and 'display: none' in ele_style:
+                    logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
+                    file_input.run_js('this.style.display="block"; this.style.visibility="visible";')
+            except Exception as e:
+                logger.error(f"定位第 {target_index} 个输入框失败: {e}")
+
+        if not file_input:
+            raise Exception("未找到iGPSport文件上传输入框")
+
+        logger.info(f"文件输入框找到，是否隐藏: {('display: none' in (file_input.attr('style') or ''))}")
 
         # 分批上传
         for batch_start in range(0, len(valid_files), max_files_per_batch):
             batch_files = valid_files[batch_start:batch_start + max_files_per_batch]
             logger.info(f"正在处理批次 {batch_start // max_files_per_batch + 1}，共 {len(batch_files)} 个文件")
 
-            # 点击"导入运动记录"按钮
-            import_btn = tab.ele('text:导入运动记录', timeout=5)
-            if not import_btn:
-                logger.error("未找到'导入运动记录'按钮")
-                return False
+            try:
+                # 处理隐藏输入框
+                tab.run_js("""
+                const el = document.querySelector('input[name="file"]');
+                if (el) { el.style.display = 'block'; el.style.visibility = 'visible'; el.style.opacity = '1'; el.style.zIndex = '9999'; }
+                """)
+                logger.info("已处理隐藏输入框")
+                time.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"修改输入框样式失败: {e}")
 
-            import_btn.click()
-            logger.info("已点击'导入运动记录'按钮")
-            time.sleep(2)
-
-            # 查找文件上传输入框
-            file_input = tab.ele('@type=file', timeout=5)
+            # 直接使用file_input引用（避免再次查找）
             if not file_input:
-                logger.error("未找到文件上传输入框")
-                return False
-
-            logger.info("找到文件上传输入框")
+                raise Exception("未找到iGPSport文件输入框")
 
             try:
                 abs_paths = [os.path.abspath(p) for p in batch_files]
                 file_input.input("\n".join(abs_paths))
+                logger.info(f"文件选择成功，共 {len(batch_files)} 个")
                 for file_path in batch_files:
-                    logger.info(f"已选择: {os.path.basename(file_path)}")
+                    logger.info(f"  - {os.path.basename(file_path)}")
             except Exception as e:
-                logger.error(f"选择文件失败: {e}")
+                logger.error(f"iGPSport选择文件失败: {e}")
                 return False
 
             # 等待文件列表加载
@@ -1275,7 +1426,9 @@ else:
 
 
 # 启动浏览器
+logger.info("[DEBUG] 准备启动 ChromiumPage")
 tab = ChromiumPage(options)
+logger.info(f"[DEBUG] ChromiumPage 已启动，当前URL: {getattr(tab, 'url', 'N/A')}")
 
 #test giant
 # giant_cookies = login_giant_browser(tab, GIANT_ACCOUNT, GIANT_PASSWORD)
@@ -1287,9 +1440,10 @@ tab = ChromiumPage(options)
 logger.info("===== 步骤1：登录顽鹿平台 =====")
 session = create_retry_session()
 try:
+    logger.info("[DEBUG] 开始调用 login_onelap_browser()")
     # 使用浏览器方式登录顽鹿账号
     onelap_cookies = login_onelap_browser(tab, ONELAP_ACCOUNT, ONELAP_PASSWORD)
-
+    logger.info(f"[DEBUG] login_onelap_browser() 返回，cookies数量: {len(onelap_cookies) if onelap_cookies else 0}")
 
     logger.info("顽鹿登录完成，准备获取活动数据...")
 except Exception as e:
@@ -1361,7 +1515,9 @@ xoss_login_ok = False
 if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
     logger.info("尝试使用行者(XOSS)作为同步基准...")
     try:
+        logger.info("[DEBUG] 准备打开行者登录页")
         tab.get('https://www.imxingzhe.com/login')
+        logger.info(f"[DEBUG] 行者登录页已打开，当前URL: {tab.url}")
         # ... (原有的行者登录代码) ...
         
         # 点击“我已阅读并同意”
@@ -1384,15 +1540,56 @@ if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in [
             except: tab.ele('button:contains("登录")').click()
         
         time.sleep(3)
+        logger.info(f"[DEBUG] 行者提交登录后URL: {tab.url}")
         tab.get('https://www.imxingzhe.com/workouts/list')
+        logger.info("[DEBUG] 已请求行者活动列表页")
         time.sleep(5)
 
         xoss_login_ok = ('login' not in (tab.url or '').lower())
-        
-        # 提取行者数据 (原代码逻辑 1071-1196 行)
-        # ... 这里保留原有的解析逻辑 ...
-        # 由于 SearchReplace 工具限制，我需要非常小心地替换代码块
-        # 下面通过替换整个 Step 2 模块来实现
+        logger.info(f"[DEBUG] 行者基准检查完成，xoss_login_ok={xoss_login_ok}，当前URL: {tab.url}")
+
+        if xoss_login_ok:
+            try:
+                logger.info("[DEBUG] 开始解析行者最新活动时间")
+                table = tab.ele('.table_box', timeout=5)
+                if table:
+                    table_html = table.html
+                    from bs4 import BeautifulSoup
+                    import re
+                    soup = BeautifulSoup(table_html, 'html.parser')
+                    rows = soup.find_all('tr')
+                    parsed = None
+                    if len(rows) > 1:
+                        for row in rows[1:4]:
+                            cells = row.find_all('td')
+                            cell_texts = [c.get_text(' ', strip=True) for c in cells]
+                            joined = ' | '.join(cell_texts)
+                            m = re.search(r'(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)', joined)
+                            if not m:
+                                continue
+                            date_str = m.group(1)
+                            try:
+                                latest_time = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                            except Exception:
+                                latest_time = datetime.strptime(date_str, '%Y-%m-%d')
+                            parsed = {
+                                'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
+                                'time_obj': latest_time
+                            }
+                            logger.info(f"[DEBUG] 从行者表格解析到最新时间: {parsed['activity_date']}")
+                            break
+                else:
+                    logger.warning("[DEBUG] 未找到行者活动表格 .table_box")
+                    parsed = None
+
+                if parsed:
+                    latest_sync_activity = parsed
+                    sync_benchmark_platform = 'xoss'
+                    logger.info(f"成功获取行者最新记录: {parsed['activity_date']}")
+                else:
+                    logger.warning("未能从行者页面解析出最新活动时间")
+            except Exception as e:
+                logger.error(f"解析行者最新活动时间失败: {e}")
         
     except Exception as e:
         logger.error(f"行者登录或获取数据失败: {e}")
@@ -1403,7 +1600,9 @@ if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in [
 if not latest_sync_activity and IGPSPORT_ENABLE_SYNC and IGPSPORT_ACCOUNT and IGPSPORT_PASSWORD:
     logger.info("尝试使用 iGPSport 作为同步基准...")
     try:
+        logger.info("[DEBUG] 开始调用 login_igpsport_browser() 获取基准")
         login_igpsport_browser(tab, IGPSPORT_ACCOUNT, IGPSPORT_PASSWORD)
+        logger.info(f"[DEBUG] iGPSport 登录返回，当前URL: {tab.url}")
         result = get_latest_activity_igpsport(tab)
         if result:
             latest_sync_activity = result
@@ -1416,7 +1615,9 @@ if not latest_sync_activity and IGPSPORT_ENABLE_SYNC and IGPSPORT_ACCOUNT and IG
 if not latest_sync_activity and GIANT_ENABLE_SYNC and GIANT_ACCOUNT and GIANT_PASSWORD:
     logger.info("尝试使用 Giant 作为同步基准...")
     try:
+        logger.info("[DEBUG] 开始调用 login_giant_browser() 获取基准")
         login_giant_browser(tab, GIANT_ACCOUNT, GIANT_PASSWORD)
+        logger.info(f"[DEBUG] Giant 登录返回，当前URL: {tab.url}")
         result = get_latest_activity_giant(tab)
         if result:
             latest_sync_activity = result
@@ -1426,21 +1627,29 @@ if not latest_sync_activity and GIANT_ENABLE_SYNC and GIANT_ACCOUNT and GIANT_PA
         logger.error(f"Giant 获取基准失败: {e}")
 
 if not latest_sync_activity:
-    logger.warning("⚠️ 未能从任何平台获取最新活动记录，将执行全量同步！")
+    if ONELAP_FULL_SYNC:
+        logger.warning("⚠️ 未能从任何平台获取最新活动记录，但已显式启用 onelap_full_sync=true，将执行全量同步！")
+    else:
+        logger.critical("❌ 未能从任何平台获取最新活动记录，且未显式启用 onelap_full_sync=true；为避免误触发全量同步，程序终止。")
+        tab.close()
+        session.close()
+        exit(2)
 else:
     logger.info(f"✅ 同步基准确定: {sync_benchmark_platform}, 最新时间: {latest_sync_activity['activity_date']}")
 
 if ONELAP_FULL_SYNC:
-    logger.info("✅ 已启用 OneLap 全量下载开关，将忽略同步基准，执行全量同步")
+    logger.info("✅ 已显式启用 OneLap 全量下载开关，将忽略同步基准，执行全量同步")
     latest_sync_activity = None
 
 
 # === 步骤3：开始执行 FIT 文件下载任务 ===
 logger.info("===== 步骤3：开始执行 FIT 文件下载任务 =====")
 try:
+    logger.info(f"[DEBUG] 进入步骤3，latest_sync_activity={'有' if latest_sync_activity else '无'}，benchmark平台={sync_benchmark_platform}")
     # 使用之前获取的顽鹿cookies获取活动数据
     activities = fetch_activities(session, onelap_cookies, latest_sync_activity)
 
+    logger.info(f"[DEBUG] fetch_activities() 返回 {len(activities)} 个活动")
     logger.info(f"总共需要处理 {len(activities)} 个活动")
     #分别是什么需要打印出来
     latest_onelap_activity_time = None

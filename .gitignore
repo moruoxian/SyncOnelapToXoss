@@ -57,3 +57,4 @@ Thumbs.db
 # 其他
 *.bak
 *.old
+.venv

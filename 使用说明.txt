@@ -1,4 +1,4 @@
-# SyncOnelapToXoss 使用说明
+﻿# SyncOnelapToXoss 使用说明
 
 本工具支持两类同步方向：
 - OneLap → 其他平台（行者 / 捷安特 / iGPSport）
@@ -11,6 +11,10 @@
 2) 配置文件
    - settings.ini：实际运行配置（你需要填写真实账号密码）
    - settings.ini.example：示例模板（可用来对照/复制）
+   - 如果 settings.ini 被覆盖，可复制 settings.ini.example 后重命名为 settings.ini
+   - 若只同步到 iGPSport：将 [igpsport] enable_sync = true
+   - 若启用 iGPSport → OneLap：将 [igpsport_to_onelap] enable = true
+   - 若只想全量下载 OneLap：将 [sync] onelap_full_sync = true
 
 3) 填写账号密码
    - OneLap 必填：[onelap] username/password
