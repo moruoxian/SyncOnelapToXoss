@@ -161,6 +161,257 @@ logger.info(f"无头模式: {'启用' if HEADLESS_MODE else '禁用'}")
 logger.info("程序初始化完成")
 
 # 定义函数
+def extract_datetimes_from_text(text):
+    if not text:
+        return []
+
+    normalized = text.replace('\xa0', ' ').replace('/', '-').replace('.', '-')
+    normalized = normalized.replace('年', '-').replace('月', '-').replace('日', ' ')
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+    patterns = [
+        (r'20\d{2}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}:\d{2}', '%Y-%m-%d %H:%M:%S'),
+        (r'20\d{2}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}', '%Y-%m-%d %H:%M'),
+        (r'20\d{2}-\d{1,2}-\d{1,2}', '%Y-%m-%d')
+    ]
+
+    results = []
+    seen = set()
+    for pattern, fmt in patterns:
+        for match in re.findall(pattern, normalized):
+            try:
+                parsed = datetime.strptime(match, fmt)
+                key = parsed.strftime('%Y-%m-%d %H:%M:%S')
+                if key not in seen:
+                    seen.add(key)
+                    results.append(parsed)
+            except Exception:
+                continue
+    return results
+
+def parse_xoss_latest_activity_from_html(page_html):
+    if not page_html:
+        return None
+
+    soup = BeautifulSoup(page_html, 'html.parser')
+    table_box = soup.select_one('.table_box')
+    if table_box:
+        rows = table_box.select('tr')
+        for row in rows:
+            cells = row.select('td')
+            if not cells:
+                continue
+            row_text = ' '.join(cell.get_text(' ', strip=True) for cell in cells).strip()
+            if not row_text:
+                continue
+            parsed_times = extract_datetimes_from_text(row_text)
+            if parsed_times:
+                first_time = parsed_times[0]
+                return {
+                    'activity_date': first_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'time_obj': first_time,
+                    'source_text': row_text
+                }
+
+    page_text = soup.get_text(' ', strip=True)
+    compact_text = re.sub(r'\s+', ' ', page_text)
+    mobile_patterns = [
+        r'(20\d{2}-\d{2}-\d{2}-(?:上午|下午|晚上|中午|凌晨)?-[^ ]+?)\s+\d+(?:\.\d+)?\s*公里',
+        r'(20\d{2}-\d{2}-\d{2}-(?:上午|下午|晚上|中午|凌晨)?-[^ ]+?)\s+\d+(?:\.\d+)?\s*km'
+    ]
+
+    for pattern in mobile_patterns:
+        match = re.search(pattern, compact_text)
+        if not match:
+            continue
+        row_text = match.group(0)
+        parsed_times = extract_datetimes_from_text(match.group(1))
+        if parsed_times:
+            first_time = parsed_times[0]
+            return {
+                'activity_date': first_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'time_obj': first_time,
+                'source_text': row_text
+            }
+
+    candidate_texts = []
+    seen_texts = set()
+
+    selectors = [
+        '.table_box tr',
+        'table tr',
+        '[class*="table"] tr',
+        '[class*="list"] tr',
+        '[class*="workout"] tr',
+        '[class*="record"] tr',
+        '[class*="workout"] [class*="item"]',
+        '[class*="record"] [class*="item"]',
+        '[class*="list"] [class*="item"]',
+        '[class*="workout"] [class*="card"]',
+        '[class*="record"] [class*="card"]',
+        '[class*="list"] li',
+        '[class*="workout"] li',
+        '[class*="record"] li'
+    ]
+
+    for selector in selectors:
+        for node in soup.select(selector):
+            text = node.get_text(' ', strip=True)
+            if not text or text in seen_texts:
+                continue
+            if '20' not in text:
+                continue
+            if len(text) > 160:
+                continue
+            if text.count('Created with Sketch') >= 1:
+                continue
+            if text.count('@2x') >= 2 or text.count('@3x') >= 2:
+                continue
+            if text.count('|') >= 6:
+                continue
+            if any(keyword in text for keyword in ['用户协议', '隐私条款', '帮助中心', '商城', '联系客服']):
+                continue
+            if text and text not in seen_texts:
+                seen_texts.add(text)
+                candidate_texts.append(text)
+
+    latest_time = None
+    latest_text = None
+    for text in candidate_texts[:80]:
+        for parsed in extract_datetimes_from_text(text):
+            if latest_time is None or parsed > latest_time:
+                latest_time = parsed
+                latest_text = text
+
+    if latest_time is None:
+        return None
+
+    return {
+        'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
+        'time_obj': latest_time,
+        'source_text': latest_text
+    }
+
+def wait_xoss_activity_page_ready(tab, timeout=12):
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        try:
+            page_html = tab.html or ''
+            if 'table_box' in page_html and re.search(r'20\d{2}-\d{2}-\d{2}', page_html):
+                return True
+        except Exception:
+            pass
+        try:
+            if tab.ele('css:.table_box', timeout=1):
+                return True
+        except Exception:
+            pass
+        try:
+            rows = tab.eles('tag:tr')
+            if rows and len(rows) > 1:
+                return True
+        except Exception:
+            pass
+        try:
+            cards = tab.eles('css:[class*="workout"] [class*="item"], [class*="record"] [class*="item"], [class*="list"] [class*="item"]')
+            if cards:
+                return True
+        except Exception:
+            pass
+        try:
+            if tab.ele('text:暂无数据', timeout=1):
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+def is_xoss_login_page(tab):
+    try:
+        current_url = (tab.url or '').lower()
+    except Exception:
+        current_url = ''
+
+    try:
+        page_title = (tab.title or '').strip()
+    except Exception:
+        page_title = ''
+
+    if 'login' in current_url:
+        return True
+    if '登录' in page_title:
+        return True
+
+    try:
+        has_account = bool(tab.ele('@name=account', timeout=1))
+        has_password = bool(tab.ele('@name=password', timeout=1))
+        if has_account and has_password:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+def click_xoss_login_button(tab):
+    selectors = [
+        'css:button.login_btn_box.login_btn.van-button.van-button--primary.van-button--normal.van-button--block',
+        'css:button[type="submit"]',
+        'text:登录'
+    ]
+    for selector in selectors:
+        try:
+            btn = tab.ele(selector, timeout=2)
+            if btn:
+                btn.click()
+                return selector
+        except Exception:
+            continue
+
+    try:
+        for btn in tab.eles('tag:button'):
+            btn_text = (btn.text or '').strip()
+            if '登录' in btn_text:
+                btn.click()
+                return f'tag:button:{btn_text}'
+    except Exception:
+        pass
+
+    return None
+
+def wait_xoss_login_success(tab, timeout=12):
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        if not is_xoss_login_page(tab):
+            return True
+        try:
+            current_url = (tab.url or '').lower()
+            current_title = (tab.title or '').strip()
+            if 'dashboard' in current_url or '运动能力' in current_title:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
+
+def get_xoss_latest_activity_from_logged_in_tab(tab):
+    try:
+        tab.get('https://www.imxingzhe.com/workouts/list')
+        logger.info("[DEBUG] 已请求行者活动列表页")
+        wait_xoss_activity_page_ready(tab, timeout=20)
+
+        for attempt in range(4):
+            page_html = tab.html or ''
+            parsed = parse_xoss_latest_activity_from_html(page_html)
+            if parsed:
+                return parsed
+            if attempt == 1:
+                tab.get('https://www.imxingzhe.com/workouts/list')
+            time.sleep(2)
+        return None
+    except Exception as e:
+        logger.warning(f"[DEBUG] 行者当前页面基准提取失败: {e}")
+        return None
+
 def create_retry_session():
     """创建带重试机制的会话"""
     logger.debug("创建带重试机制的会话")
@@ -1533,61 +1784,26 @@ if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in [
         tab.ele('@name=password').input(XOSS_PASSWORD)
         
         # 点击登录
-        try:
-            tab.ele('.login_btn_box login_btn van-button van-button--primary van-button--normal van-button--block').click()
-        except:
-            try: tab.ele('button[type=submit]').click()
-            except: tab.ele('button:contains("登录")').click()
+        clicked_selector = click_xoss_login_button(tab)
+        logger.info(f"[DEBUG] 行者登录按钮点击方式: {clicked_selector}")
         
-        time.sleep(3)
-        logger.info(f"[DEBUG] 行者提交登录后URL: {tab.url}")
-        tab.get('https://www.imxingzhe.com/workouts/list')
-        logger.info("[DEBUG] 已请求行者活动列表页")
-        time.sleep(5)
-
-        xoss_login_ok = ('login' not in (tab.url or '').lower())
-        logger.info(f"[DEBUG] 行者基准检查完成，xoss_login_ok={xoss_login_ok}，当前URL: {tab.url}")
-
-        if xoss_login_ok:
+        xoss_login_submitted = wait_xoss_login_success(tab, timeout=12)
+        logger.info(f"[DEBUG] 行者提交登录后URL: {tab.url}, 标题: {tab.title}, login_success={xoss_login_submitted}")
+        xoss_login_ok = xoss_login_submitted
+        if not xoss_login_submitted:
+            logger.warning("[DEBUG] 行者登录提交后仍未检测到成功登录态，跳过XOSS基准提取")
+        else:
             try:
-                logger.info("[DEBUG] 开始解析行者最新活动时间")
-                table = tab.ele('.table_box', timeout=5)
-                if table:
-                    table_html = table.html
-                    from bs4 import BeautifulSoup
-                    import re
-                    soup = BeautifulSoup(table_html, 'html.parser')
-                    rows = soup.find_all('tr')
-                    parsed = None
-                    if len(rows) > 1:
-                        for row in rows[1:4]:
-                            cells = row.find_all('td')
-                            cell_texts = [c.get_text(' ', strip=True) for c in cells]
-                            joined = ' | '.join(cell_texts)
-                            m = re.search(r'(20\d{2}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)', joined)
-                            if not m:
-                                continue
-                            date_str = m.group(1)
-                            try:
-                                latest_time = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-                            except Exception:
-                                latest_time = datetime.strptime(date_str, '%Y-%m-%d')
-                            parsed = {
-                                'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'time_obj': latest_time
-                            }
-                            logger.info(f"[DEBUG] 从行者表格解析到最新时间: {parsed['activity_date']}")
-                            break
-                else:
-                    logger.warning("[DEBUG] 未找到行者活动表格 .table_box")
-                    parsed = None
-
+                logger.info("[DEBUG] 开始通过当前已登录页面解析行者最新活动时间")
+                parsed = get_xoss_latest_activity_from_logged_in_tab(tab)
                 if parsed:
                     latest_sync_activity = parsed
                     sync_benchmark_platform = 'xoss'
-                    logger.info(f"成功获取行者最新记录: {parsed['activity_date']}")
+                    logger.info(f"成功通过当前页面获取行者最新记录: {parsed['activity_date']}")
+                    if parsed.get('source_text'):
+                        logger.info(f"[DEBUG] 行者当前页面来源文本: {parsed['source_text'][:200]}")
                 else:
-                    logger.warning("未能从行者页面解析出最新活动时间")
+                    logger.warning("未能通过当前页面解析出行者最新活动时间")
             except Exception as e:
                 logger.error(f"解析行者最新活动时间失败: {e}")
         
@@ -1859,32 +2075,18 @@ try:
     if XOSS_ENABLE_SYNC and xoss_login_ok and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
         logger.info("跳转到行者活动列表页面验证同步结果...")
         tab.get('https://www.imxingzhe.com/workouts/list')
-        time.sleep(5)  # 等待页面加载
+        wait_xoss_activity_page_ready(tab, timeout=12)
         
         logger.info("请检查行者平台的活动列表，确认文件是否已成功同步")
         logger.info("程序将在15秒后自动关闭，您可以手动查看最新的活动记录")
         
         try:
-            table = tab.ele('.table_box', timeout=3)
-            if table:
-                table_html = table.html
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(table_html, 'html.parser')
-                rows = soup.find_all('tr')
-                
-                if len(rows) > 1:  # 有数据行
-                    logger.info("==最后查看行者平台最新的活动记录如下==:")
-                    for i, row in enumerate(rows[1:4], 1):  # 跳过表头，显示前3条
-                        cells = row.find_all('td')
-                        if len(cells) >= 4:
-                            activity_date = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                            title = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                            distance_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                            logger.info(f"  {i}. {activity_date} - {title} - {distance_text}")
-                else:
-                    logger.warning("未找到活动数据")
+            parsed = parse_xoss_latest_activity_from_html(tab.html)
+            if parsed:
+                logger.info("==最后查看行者平台最新的活动记录如下==:")
+                logger.info(f"  1. {parsed['activity_date']} - {parsed.get('source_text', '')[:160]}")
             else:
-                logger.warning("未找到活动表格，请手动检查页面")
+                logger.warning("未找到活动表格或活动数据，请手动检查页面")
         except Exception as e:
             logger.debug(f"获取验证数据时出错: {e}")
             logger.info("自动验证失败，请手动查看页面内容")
