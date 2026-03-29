@@ -967,9 +967,9 @@ def get_latest_activity_igpsport(tab):
     """从iGPSport获取最新活动时间"""
     logger.info("正在从iGPSport获取最新活动记录...")
     try:
-        # 确保在历史列表页
-        if 'history/list' not in tab.url:
-            tab.get('https://app.igpsport.cn/sport/history/list')
+        # 确保在运动记录页（新版 iGPSport 使用 /sport/record）
+        if '/sport/record' not in tab.url:
+            tab.get('https://app.igpsport.cn/sport/record')
             
         # 显式等待表格加载 (最多等待10秒)
         logger.info("等待iGPSport活动列表加载...")
@@ -1327,7 +1327,7 @@ def upload_files_to_igpsport(tab, valid_files):
             # 如果还有下一批，需要等待页面恢复
             if batch_start + max_files_per_batch < len(valid_files):
                 logger.info("等待页面恢复，准备下一批上传...")
-                tab.get('https://app.igpsport.cn/sport/history/list')
+                tab.get('https://app.igpsport.cn/sport/record')
                 time.sleep(3)
 
         logger.info("===== iGPSport上传流程完成 =====")
