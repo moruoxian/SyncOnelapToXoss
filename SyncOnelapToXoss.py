@@ -782,6 +782,31 @@ def login_igpsport_browser(tab, account, password):
     logger.info("使用浏览器登录iGPSport平台")
 
     try:
+        current_url = tab.url or ''
+        # 如果已经在主页/运动记录页，直接复用登录态
+        if ('app.igpsport.cn/user/home' in current_url) or ('app.igpsport.cn/sport/record' in current_url):
+            logger.info(f"检测到 iGPSport 已登录态，直接复用当前会话: {current_url}")
+            session_cookies = {}
+            try:
+                cookies = tab.cookies()
+                for cookie in cookies:
+                    session_cookies[cookie['name']] = cookie['value']
+            except Exception:
+                pass
+            return session_cookies
+
+        # 如果已经在 app.igpsport.cn 域下且不是登录页，也认为优先复用，再交给后续页面跳转处理
+        if 'app.igpsport.cn/' in current_url and '/login' not in current_url:
+            logger.info(f"检测到 iGPSport 应用内页面，尝试复用登录态: {current_url}")
+            session_cookies = {}
+            try:
+                cookies = tab.cookies()
+                for cookie in cookies:
+                    session_cookies[cookie['name']] = cookie['value']
+            except Exception:
+                pass
+            return session_cookies
+
         # 访问登录页面
         logger.info("正在访问iGPSport登录页面...")
         tab.get('https://login.passport.igpsport.cn/login?lang=zh-Hans')
