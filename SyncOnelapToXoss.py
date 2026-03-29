@@ -242,101 +242,6 @@ def exchange_strava_code_for_token(client_id, client_secret, code):
     return response.json()
 
 
-def refresh_strava_token(client_id, client_secret, refresh_token):
-    response = requests.post(
-        'https://www.strava.com/api/v3/oauth/token',
-        data={
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'refresh_token': refresh_token,
-            'grant_type': 'refresh_token'
-        },
-        timeout=20
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def ensure_strava_access_token():
-    global STRAVA_ACCESS_TOKEN, STRAVA_REFRESH_TOKEN, STRAVA_EXPIRES_AT, STRAVA_ATHLETE_ID, STRAVA_ATHLETE_NAME
-
-    if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SECRET or not STRAVA_REFRESH_TOKEN:
-        raise Exception('Strava 配置不完整，请先执行 --strava-auth 完成授权')
-
-    now_ts = int(time.time())
-    if STRAVA_ACCESS_TOKEN and STRAVA_EXPIRES_AT and now_ts < int(STRAVA_EXPIRES_AT) - STRAVA_TOKEN_REFRESH_MARGIN:
-        return STRAVA_ACCESS_TOKEN
-
-    logger.info('[Strava] access_token 已过期或即将过期，正在刷新...')
-    token_data = refresh_strava_token(STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_REFRESH_TOKEN)
-    athlete = token_data.get('athlete') or {}
-    STRAVA_ACCESS_TOKEN = token_data.get('access_token', '')
-    STRAVA_REFRESH_TOKEN = token_data.get('refresh_token', STRAVA_REFRESH_TOKEN)
-    STRAVA_EXPIRES_AT = int(token_data.get('expires_at', 0) or 0)
-    STRAVA_ATHLETE_ID = str(athlete.get('id', '') or '')
-    STRAVA_ATHLETE_NAME = athlete.get('username') or athlete.get('firstname') or STRAVA_ATHLETE_NAME
-    save_strava_config({
-        'access_token': STRAVA_ACCESS_TOKEN,
-        'refresh_token': STRAVA_REFRESH_TOKEN,
-        'expires_at': STRAVA_EXPIRES_AT,
-        'athlete_id': STRAVA_ATHLETE_ID,
-        'athlete_name': STRAVA_ATHLETE_NAME,
-    })
-    logger.info('[Strava] token 刷新成功')
-    return STRAVA_ACCESS_TOKEN
-
-
-def poll_strava_upload(upload_id, access_token, timeout_seconds=60):
-    deadline = time.time() + timeout_seconds
-    headers = {'Authorization': f'Bearer {access_token}'}
-    while time.time() < deadline:
-        response = requests.get(f'https://www.strava.com/api/v3/uploads/{upload_id}', headers=headers, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        if data.get('error'):
-            raise Exception(data.get('error'))
-        if data.get('activity_id'):
-            return data
-        status_text = (data.get('status') or '') + ' ' + (data.get('error') or '')
-        logger.info(f"[Strava] 上传处理中: {status_text.strip() or 'processing'}")
-        time.sleep(2)
-    raise Exception('Strava 上传状态轮询超时')
-
-
-def upload_file_to_strava(file_path, activity=None):
-    access_token = ensure_strava_access_token()
-    headers = {'Authorization': f'Bearer {access_token}'}
-
-    external_id = os.path.basename(file_path)
-    if activity and activity.get('id'):
-        external_id = f"onelap_{activity.get('id')}_{os.path.basename(file_path)}"
-
-    data = {
-        'data_type': 'fit',
-        'external_id': external_id,
-        'sport_type': 'Ride',
-    }
-
-    logger.info(f"[Strava] 开始上传文件: {os.path.basename(file_path)}")
-    with open(file_path, 'rb') as f:
-        response = requests.post(
-            'https://www.strava.com/api/v3/uploads',
-            headers=headers,
-            data=data,
-            files={'file': (os.path.basename(file_path), f, 'application/octet-stream')},
-            timeout=60
-        )
-    response.raise_for_status()
-    upload_data = response.json()
-    upload_id = upload_data.get('id') or upload_data.get('id_str')
-    if not upload_id:
-        raise Exception(f"Strava 上传失败: {json.dumps(upload_data, ensure_ascii=False)}")
-    logger.info(f"[Strava] 上传已提交，upload_id={upload_id}")
-    result = poll_strava_upload(upload_id, access_token)
-    logger.info(f"[Strava] 上传成功，activity_id={result.get('activity_id')}")
-    return result
-
-
 # 定义函数
 def extract_datetimes_from_text(text):
     if not text:
@@ -1848,6 +1753,39 @@ if STRAVA_AUTH_MODE:
         sys.exit(0)
     except Exception as e:
         logger.error(f'Strava 授权初始化失败: {e}')
+        sys.exit(1)
+
+if '--strava-test' in sys.argv:
+    try:
+        token = refresh_strava_token_if_needed(CONFIG_FILE_PATH)
+        cfg = configparser.ConfigParser()
+        cfg.read(CONFIG_FILE_PATH, encoding='utf-8-sig')
+        athlete_id = cfg.get('strava', 'athlete_id', fallback='').strip()
+        athlete_name = cfg.get('strava', 'athlete_name', fallback='').strip()
+        logger.info(f"[Strava] 测试成功，token 可用，账号: {athlete_name or athlete_id}")
+        print('STRAVA_TEST_OK')
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f'[Strava] 测试失败: {e}')
+        sys.exit(1)
+
+if '--strava-upload-test' in sys.argv:
+    try:
+        idx = sys.argv.index('--strava-upload-test')
+        if idx + 1 >= len(sys.argv):
+            raise Exception('请在 --strava-upload-test 后面提供文件路径')
+        test_file = sys.argv[idx + 1]
+        if not os.path.isabs(test_file):
+            test_file = os.path.abspath(test_file)
+        if not os.path.exists(test_file):
+            raise Exception(f'测试文件不存在: {test_file}')
+        result = upload_files_to_strava([test_file], CONFIG_FILE_PATH)
+        if not result:
+            raise Exception('Strava 上传测试未成功')
+        print('STRAVA_UPLOAD_TEST_OK')
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f'[Strava] 上传测试失败: {e}')
         sys.exit(1)
 
 def download_fit_file(session, activity, headers):
