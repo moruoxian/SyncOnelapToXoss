@@ -192,6 +192,7 @@ logger.info(f"无头模式: {'启用' if HEADLESS_MODE else '禁用'}")
 logger.info("程序初始化完成")
 
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'settings.ini')
+STRAVA_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'strava_upload_state.json')
 
 # 标记独立命令模式；真正执行放到 run_strava_auth_flow 定义之后，但仍早于主同步流程
 STRAVA_AUTH_MODE = '--strava-auth' in sys.argv
@@ -1567,6 +1568,29 @@ def poll_strava_upload_status(upload_id, access_token, timeout_seconds=60):
     return last_data
 
 
+def load_strava_upload_state(state_file=STRAVA_STATE_FILE):
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f'[Strava] 读取去重状态失败: {e}')
+    return {}
+
+
+def save_strava_upload_state(state, state_file=STRAVA_STATE_FILE):
+    try:
+        with open(state_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f'[Strava] 保存去重状态失败: {e}')
+
+
+def build_strava_file_signature(file_path):
+    stat = os.stat(file_path)
+    return f"{os.path.basename(file_path)}|{stat.st_size}|{int(stat.st_mtime)}"
+
+
 def upload_file_to_strava(file_path, access_token):
     headers = {'Authorization': f'Bearer {access_token}'}
     external_id = os.path.basename(file_path)
@@ -1597,21 +1621,56 @@ def upload_files_to_strava(valid_files, config_file='settings.ini'):
     if not access_token:
         logger.info('[Strava] 未启用或 token 不可用，跳过')
         return False
+    state = load_strava_upload_state()
     success_count = 0
+    skipped_count = 0
     for file_path in valid_files:
         try:
+            signature = build_strava_file_signature(file_path)
+            state_item = state.get(signature) or {}
+            if state_item.get('uploaded'):
+                logger.info(f"[Strava] 跳过重复文件: {os.path.basename(file_path)}")
+                skipped_count += 1
+                continue
             logger.info(f"[Strava] 开始上传: {os.path.basename(file_path)}")
             upload_data = upload_file_to_strava(file_path, access_token)
             upload_id = upload_data.get('id') or upload_data.get('id_str')
             logger.info(f"[Strava] 上传已提交，upload_id={upload_id}")
+            result = None
             if upload_id:
                 result = poll_strava_upload_status(upload_id, access_token)
                 logger.info(f"[Strava] 处理结果: {json.dumps(result, ensure_ascii=False)}")
+            state[signature] = {
+                'uploaded': True,
+                'file': os.path.basename(file_path),
+                'upload_id': str(upload_id or ''),
+                'activity_id': str((result or {}).get('activity_id', '')),
+                'uploaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            save_strava_upload_state(state)
             success_count += 1
         except Exception as e:
+            err_text = str(e)
+            if 'duplicate of' in err_text.lower():
+                dup_activity_id = ''
+                m = re.search(r'/activities/(\d+)', err_text)
+                if m:
+                    dup_activity_id = m.group(1)
+                state[signature] = {
+                    'uploaded': True,
+                    'file': os.path.basename(file_path),
+                    'upload_id': '',
+                    'activity_id': dup_activity_id,
+                    'uploaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'note': 'duplicate acknowledged by strava'
+                }
+                save_strava_upload_state(state)
+                logger.info(f"[Strava] 检测到服务端重复，已记录并跳过: {os.path.basename(file_path)}")
+                skipped_count += 1
+                continue
             logger.error(f"[Strava] 上传失败 {os.path.basename(file_path)}: {e}")
-    logger.info(f"[Strava] 上传完成，成功 {success_count}/{len(valid_files)}")
-    return success_count > 0
+    logger.info(f"[Strava] 上传完成，成功 {success_count}/{len(valid_files)}，跳过重复 {skipped_count}")
+    return success_count > 0 or skipped_count == len(valid_files)
 
 
 def run_strava_auth_flow(config_file='settings.ini'):
