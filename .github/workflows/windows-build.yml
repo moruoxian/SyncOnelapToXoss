@@ -35,7 +35,7 @@ jobs:
       - name: Build Windows executable
         shell: pwsh
         run: |
-          pyinstaller SyncOnelapToXoss.spec --noconfirm
+          pyinstaller -F SyncOnelapToXoss.py --name SyncOnelapToXoss --noconfirm
 
       - name: Prepare package
         shell: pwsh
