@@ -334,87 +334,6 @@ def upload_file_to_strava(file_path, activity=None):
     return result
 
 
-def run_strava_auth_flow():
-    global STRAVA_ACCESS_TOKEN, STRAVA_REFRESH_TOKEN, STRAVA_EXPIRES_AT, STRAVA_ATHLETE_ID, STRAVA_ATHLETE_NAME
-
-    if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SECRET:
-        raise Exception('请先在 settings.ini 的 [strava] 中配置 client_id 和 client_secret')
-
-    auth_result = {'code': None, 'error': None}
-    port = STRAVA_REDIRECT_PORT or 8765
-
-    class StravaCallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            parsed = urlparse(self.path)
-            if parsed.path != '/callback':
-                self.send_response(404)
-                self.end_headers()
-                return
-            params = dict([part.split('=', 1) if '=' in part else (part, '') for part in parsed.query.split('&') if part])
-            code = params.get('code')
-            error = params.get('error')
-            auth_result['code'] = code
-            auth_result['error'] = error
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            if code:
-                self.wfile.write('Strava 授权成功，可以关闭此页面。'.encode('utf-8'))
-            else:
-                self.wfile.write(f'Strava 授权失败: {error}'.encode('utf-8'))
-
-        def log_message(self, format, *args):
-            return
-
-    server = HTTPServer(('127.0.0.1', port), StravaCallbackHandler)
-    server.timeout = 120
-    auth_url = build_strava_auth_url(STRAVA_CLIENT_ID, port)
-
-    logger.info(f'[Strava] 正在启动本地回调服务: {build_strava_redirect_uri(port)}')
-    logger.info(f'[Strava] 请在浏览器中完成授权: {auth_url}')
-    try:
-        webbrowser.open(auth_url)
-    except Exception:
-        logger.warning('[Strava] 自动打开浏览器失败，请手动复制链接打开')
-
-    thread = threading.Thread(target=server.handle_request, daemon=True)
-    thread.start()
-    thread.join(timeout=120)
-    server.server_close()
-
-    if auth_result.get('error'):
-        raise Exception(f"Strava 授权失败: {auth_result['error']}")
-    if not auth_result.get('code'):
-        raise Exception('Strava 授权超时，未收到回调 code')
-
-    token_data = exchange_strava_code_for_token(STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, auth_result['code'])
-    athlete = token_data.get('athlete') or {}
-    STRAVA_ACCESS_TOKEN = token_data.get('access_token', '')
-    STRAVA_REFRESH_TOKEN = token_data.get('refresh_token', '')
-    STRAVA_EXPIRES_AT = int(token_data.get('expires_at', 0) or 0)
-    STRAVA_ATHLETE_ID = str(athlete.get('id', '') or '')
-    STRAVA_ATHLETE_NAME = athlete.get('username') or athlete.get('firstname') or ''
-
-    save_strava_config({
-        'enable_sync': 'true',
-        'access_token': STRAVA_ACCESS_TOKEN,
-        'refresh_token': STRAVA_REFRESH_TOKEN,
-        'expires_at': STRAVA_EXPIRES_AT,
-        'athlete_id': STRAVA_ATHLETE_ID,
-        'athlete_name': STRAVA_ATHLETE_NAME,
-    })
-
-    logger.info(f"[Strava] 授权成功，绑定账号: {STRAVA_ATHLETE_NAME or STRAVA_ATHLETE_ID}")
-
-
-if '--strava-auth' in sys.argv:
-    try:
-        run_strava_auth_flow()
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f'[Strava] 授权初始化失败: {e}')
-        sys.exit(1)
-
 # 定义函数
 def extract_datetimes_from_text(text):
     if not text:
@@ -1827,20 +1746,44 @@ def run_strava_auth_flow(config_file='settings.ini'):
     server_thread.start()
 
     logger.info(f'[Strava] 请在浏览器中完成授权: {auth_url}')
+    logger.info('[Strava] 如果当前环境无法自动打开浏览器，请复制上面的链接到你本地浏览器打开。')
+    logger.info(f'[Strava] 回调地址: {redirect_uri}')
+    opened = False
     try:
-        webbrowser.open(auth_url)
+        opened = bool(webbrowser.open(auth_url))
     except Exception as e:
         logger.warning(f'[Strava] 自动打开浏览器失败，请手动打开链接: {e}')
+
+    if opened:
+        logger.info('[Strava] 已尝试自动打开浏览器，等待授权回调...')
+    else:
+        logger.info('[Strava] 未能自动打开浏览器，请手动访问授权链接。')
 
     server_thread.join(timeout=180)
     httpd.server_close()
 
     if auth_result.get('error'):
         raise Exception(f"Strava 授权失败: {auth_result['error']}")
+
     if not auth_result.get('code'):
-        raise Exception('Strava 授权超时或未收到 code')
-    if auth_result.get('state') != expected_state:
+        print('\n[Strava] 未收到自动回调。')
+        print('[Strava] 你可以在完成浏览器授权后，把回调 URL 里的 code 参数手动粘贴进来。')
+        manual_input = input('请输入完整回调 URL 或直接输入 code（留空则取消）: ').strip()
+        if not manual_input:
+            raise Exception('Strava 授权超时且未提供手动 code')
+        if 'code=' in manual_input:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(manual_input)
+            qs = parse_qs(parsed.query)
+            auth_result['code'] = (qs.get('code') or [None])[0]
+            auth_result['state'] = (qs.get('state') or [None])[0]
+        else:
+            auth_result['code'] = manual_input
+
+    if auth_result.get('state') and auth_result.get('state') != expected_state:
         raise Exception('Strava 授权 state 校验失败')
+    if not auth_result.get('code'):
+        raise Exception('Strava 授权失败，未获取到 code')
 
     token_data = exchange_strava_code_for_token(client_id, client_secret, auth_result['code'])
     athlete = token_data.get('athlete') or {}
