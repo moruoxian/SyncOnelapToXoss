@@ -1613,17 +1613,33 @@ def upload_file_to_strava(file_path, access_token):
     return data
 
 
+def classify_strava_error(err_text):
+    text = (err_text or '').lower()
+    if 'duplicate of' in text:
+        return 'duplicate', '检测到重复活动，已跳过'
+    if '401' in text or 'unauthorized' in text or 'access token' in text:
+        return 'auth', '授权失效或 token 不可用，请重新执行 --strava-test / --strava-auth'
+    if '403' in text or 'scope' in text or 'permission' in text:
+        return 'permission', '权限不足，请确认 Strava 授权包含 activity:write'
+    if 'malformed' in text or 'unprocessable' in text or 'invalid' in text:
+        return 'file', '活动文件格式异常，Strava 无法处理该 FIT 文件'
+    if 'rate limit' in text or '429' in text or 'too many requests' in text:
+        return 'rate_limit', '请求过于频繁，稍后再试'
+    return 'unknown', err_text
+
+
 def upload_files_to_strava(valid_files, config_file='settings.ini'):
     if not valid_files:
         logger.info('[Strava] 没有可上传文件，跳过')
-        return True
+        return {'ok': True, 'success': 0, 'skipped': 0, 'failed': 0}
     access_token = refresh_strava_token_if_needed(config_file)
     if not access_token:
         logger.info('[Strava] 未启用或 token 不可用，跳过')
-        return False
+        return {'ok': False, 'success': 0, 'skipped': 0, 'failed': len(valid_files)}
     state = load_strava_upload_state()
     success_count = 0
     skipped_count = 0
+    failed_count = 0
     for file_path in valid_files:
         try:
             signature = build_strava_file_signature(file_path)
@@ -1651,7 +1667,8 @@ def upload_files_to_strava(valid_files, config_file='settings.ini'):
             success_count += 1
         except Exception as e:
             err_text = str(e)
-            if 'duplicate of' in err_text.lower():
+            category, friendly = classify_strava_error(err_text)
+            if category == 'duplicate':
                 dup_activity_id = ''
                 m = re.search(r'/activities/(\d+)', err_text)
                 if m:
@@ -1665,12 +1682,19 @@ def upload_files_to_strava(valid_files, config_file='settings.ini'):
                     'note': 'duplicate acknowledged by strava'
                 }
                 save_strava_upload_state(state)
-                logger.info(f"[Strava] 检测到服务端重复，已记录并跳过: {os.path.basename(file_path)}")
+                logger.info(f"[Strava] {friendly}: {os.path.basename(file_path)}")
                 skipped_count += 1
                 continue
-            logger.error(f"[Strava] 上传失败 {os.path.basename(file_path)}: {e}")
-    logger.info(f"[Strava] 上传完成，成功 {success_count}/{len(valid_files)}，跳过重复 {skipped_count}")
-    return success_count > 0 or skipped_count == len(valid_files)
+            failed_count += 1
+            logger.error(f"[Strava] 上传失败 {os.path.basename(file_path)} [{category}]: {friendly}")
+            logger.debug(f"[Strava] 原始错误: {err_text}")
+    logger.info(f"[Strava] 上传完成，成功 {success_count}/{len(valid_files)}，跳过重复 {skipped_count}，失败 {failed_count}")
+    return {
+        'ok': failed_count == 0,
+        'success': success_count,
+        'skipped': skipped_count,
+        'failed': failed_count
+    }
 
 
 def run_strava_auth_flow(config_file='settings.ini'):
@@ -1839,7 +1863,7 @@ if '--strava-upload-test' in sys.argv:
         if not os.path.exists(test_file):
             raise Exception(f'测试文件不存在: {test_file}')
         result = upload_files_to_strava([test_file], CONFIG_FILE_PATH)
-        if not result:
+        if not result.get('ok', False):
             raise Exception('Strava 上传测试未成功')
         print('STRAVA_UPLOAD_TEST_OK')
         sys.exit(0)
@@ -2553,11 +2577,12 @@ try:
     elif not (STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET):
         logger.info("未配置 Strava client_id/client_secret，跳过 Strava 上传")
     else:
-        upload_success = upload_files_to_strava(valid_files, 'settings.ini')
-        if upload_success:
+        strava_result = upload_files_to_strava(valid_files, 'settings.ini')
+        logger.info(f"Strava 上传摘要: 成功 {strava_result.get('success', 0)}，重复跳过 {strava_result.get('skipped', 0)}，失败 {strava_result.get('failed', 0)}")
+        if strava_result.get('ok', False):
             logger.info("文件已成功提交到 Strava 平台")
         else:
-            logger.warning("Strava 平台上传未成功，请检查日志")
+            logger.warning("Strava 平台存在失败项，请检查上方分类日志")
 except Exception as e:
     logger.error(f"Strava 平台上传过程出错: {e}")
     logger.info("继续执行后续步骤...")
