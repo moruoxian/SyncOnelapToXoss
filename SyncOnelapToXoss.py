@@ -192,6 +192,9 @@ logger.info(f"无头模式: {'启用' if HEADLESS_MODE else '禁用'}")
 logger.info("程序初始化完成")
 
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'settings.ini')
+
+# 标记独立命令模式；真正执行放到 run_strava_auth_flow 定义之后，但仍早于主同步流程
+STRAVA_AUTH_MODE = '--strava-auth' in sys.argv
 STRAVA_TOKEN_REFRESH_MARGIN = 3600
 
 
@@ -1797,6 +1800,15 @@ def run_strava_auth_flow(config_file='settings.ini'):
     })
     logger.info(f"[Strava] 授权成功，已绑定账号: {athlete.get('username') or athlete.get('firstname') or athlete.get('id', '')}")
 
+if STRAVA_AUTH_MODE:
+    try:
+        run_strava_auth_flow(CONFIG_FILE_PATH)
+        logger.info('Strava 首次授权完成，程序结束。')
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f'Strava 授权初始化失败: {e}')
+        sys.exit(1)
+
 def download_fit_file(session, activity, headers):
     """下载单个 FIT 文件"""
     # 确保存储目录存在（但不清空，因为是批量下载）
@@ -2365,21 +2377,6 @@ if not valid_files:
     logger.warning("没有找到符合条件的文件。")
     tab.close()
     exit()
-
-# 支持首次 Strava 授权初始化
-if '--strava-auth' in sys.argv:
-    try:
-        run_strava_auth_flow('settings.ini')
-        logger.info('Strava 首次授权完成，程序结束。')
-        tab.close()
-        session.close()
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f'Strava 授权初始化失败: {e}')
-        tab.close()
-        session.close()
-        sys.exit(1)
-
 
 # === 步骤4：跳转到行者上传页面并分批上传文件 ===
 logger.info("===== 步骤4：开始上传文件到行者平台 =====")
