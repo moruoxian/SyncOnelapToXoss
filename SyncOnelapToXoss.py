@@ -1327,24 +1327,42 @@ def upload_files_to_igpsport(tab, valid_files):
             # 等待文件列表加载
             time.sleep(2)
 
-            # 点击"上传"按钮确认上传
+            # 点击“确认/上传”按钮完成最终提交
             try:
-                # 查找所有按钮，找到文本为"上传"的按钮
                 upload_confirm_btn = None
-                buttons = tab.eles('tag:button')
-                for btn in buttons:
-                    if btn.text and btn.text.strip() == '上传':
-                        upload_confirm_btn = btn
-                        break
+                candidate_texts = ['确认', '上传']
+                button_candidates = []
 
-                if upload_confirm_btn:
+                # 优先在按钮元素中查找
+                for selector in ['tag:button', 'tag:div', 'tag:span']:
+                    try:
+                        for ele in tab.eles(selector):
+                            text = (ele.text or '').strip()
+                            if text:
+                                button_candidates.append((selector, text, ele))
+                                if text in candidate_texts or any(t in text for t in candidate_texts):
+                                    upload_confirm_btn = ele
+                                    logger.info(f"命中最终确认元素: selector={selector}, text={text}")
+                                    break
+                        if upload_confirm_btn:
+                            break
+                    except Exception:
+                        continue
+
+                if not upload_confirm_btn:
+                    preview = [f"{sel}:{txt}" for sel, txt, _ in button_candidates[:20]]
+                    logger.warning(f"未找到最终确认按钮（确认/上传）。当前候选元素文本: {preview}")
+                    return False
+
+                try:
+                    upload_confirm_btn.click(by_js=True)
+                except Exception:
                     upload_confirm_btn.click()
-                    logger.info("已点击'上传'确认按钮")
-                    time.sleep(8)  # 等待上传完成
-                else:
-                    logger.warning("未找到上传确认按钮")
+                logger.info("已点击最终确认按钮（确认/上传）")
+                time.sleep(8)  # 等待上传开始/处理
             except Exception as e:
-                logger.error(f"点击上传按钮失败: {e}")
+                logger.error(f"点击最终确认按钮失败: {e}")
+                return False
 
             # 检查是否有成功提示，或等待模态框关闭
             time.sleep(3)
