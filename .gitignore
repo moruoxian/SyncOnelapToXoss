@@ -3,8 +3,8 @@
 # 这些文件不会被提交到版本控制
 # =============================================================================
 
-# 注意：settings.ini 可能包含真实账号、密码、token、client secret，禁止提交
-settings.ini
+# 注意：settings.local.ini / strava_upload_state.json 可能包含真实账号、密码、token、client secret，禁止提交
+settings.local.ini
 strava_upload_state.json
 
 # Python 缓存文件
