@@ -1628,6 +1628,28 @@ def classify_strava_error(err_text):
     return 'unknown', err_text
 
 
+def get_latest_activity_strava(config_file='settings.ini'):
+    access_token = refresh_strava_token_if_needed(config_file)
+    if not access_token:
+        return None
+    headers = {'Authorization': f'Bearer {access_token}'}
+    resp = requests.get('https://www.strava.com/api/v3/athlete/activities?per_page=1&page=1', headers=headers, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
+        return None
+    latest = data[0]
+    time_str = latest.get('start_date_local') or latest.get('start_date')
+    if not time_str:
+        return None
+    latest_time = datetime.fromisoformat(time_str.replace('Z', '+00:00')).replace(tzinfo=None)
+    return {
+        'platform': 'strava',
+        'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
+        'time_obj': latest_time
+    }
+
+
 def upload_files_to_strava(valid_files, config_file='settings.ini'):
     if not valid_files:
         logger.info('[Strava] 没有可上传文件，跳过')
@@ -2343,6 +2365,20 @@ if not latest_sync_activity and GIANT_ENABLE_SYNC and GIANT_ACCOUNT and GIANT_PA
             logger.info(f"成功获取 Giant 最新记录: {result['activity_date']}")
     except Exception as e:
         logger.error(f"Giant 获取基准失败: {e}")
+
+# 如果还不行，尝试 Strava
+if not latest_sync_activity and STRAVA_ENABLE_SYNC and STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET and STRAVA_REFRESH_TOKEN:
+    logger.info("尝试使用 Strava 作为同步基准...")
+    try:
+        result = get_latest_activity_strava(CONFIG_FILE_PATH)
+        if result:
+            latest_sync_activity = result
+            sync_benchmark_platform = 'strava'
+            logger.info(f"成功获取 Strava 最新记录: {result['activity_date']}")
+        else:
+            logger.warning("未获取到 Strava 最新记录")
+    except Exception as e:
+        logger.error(f"Strava 获取基准失败: {e}")
 
 if not latest_sync_activity:
     if ONELAP_FULL_SYNC:
