@@ -280,6 +280,26 @@ Strava 已增加基础去重保护：
 pip install -r requirements.txt
 ```
 
+## 🤖 GitHub Actions 自动打包
+
+仓库已支持通过 GitHub Actions 自动执行 **Windows 打包**：
+
+- 触发方式：
+  - push 到 `main`
+  - push 到 `release-*` 分支
+  - push `v*` 标签
+  - 手动 `workflow_dispatch`
+- 运行环境：`windows-latest`
+- 产物：Windows zip 包（作为 Actions artifact 上传）
+
+工作流文件位置：
+
+```text
+.github/workflows/windows-build.yml
+```
+
+> 当前版本先实现“自动打包并上传 artifact”，后续可继续扩展为自动上传到 GitHub Release。
+
 ## 📝 版本历史
 
 ### v1.2.3 (2026-02-08)
