@@ -1749,21 +1749,62 @@ def run_strava_auth_flow(config_file='settings.ini'):
     server_thread.start()
 
     logger.info(f'[Strava] 请在浏览器中完成授权: {auth_url}')
-    logger.info('[Strava] 如果当前环境无法自动打开浏览器，请复制上面的链接到你本地浏览器打开。')
     logger.info(f'[Strava] 回调地址: {redirect_uri}')
-    opened = False
+
+    auth_tab = None
     try:
-        opened = bool(webbrowser.open(auth_url))
+        logger.info('[Strava] 正在使用 ChromiumPage 打开授权页面...')
+        auth_options = ChromiumOptions()
+        auth_options.incognito()
+        auth_options.set_argument('--no-sandbox')
+        auth_options.set_argument('--disable-dev-shm-usage')
+        auth_options.set_argument('--disable-web-security')
+        auth_options.set_argument('--disable-features=VizDisplayCompositor')
+        auth_options.set_argument('--disable-blink-features=AutomationControlled')
+        auth_options.set_argument('--disable-extensions')
+        auth_options.auto_port()
+        if HEADLESS_MODE:
+            auth_options.headless()
+        auth_tab = ChromiumPage(auth_options)
+        auth_tab.get(auth_url)
+        logger.info(f'[Strava] 已通过 ChromiumPage 打开授权页，当前URL: {getattr(auth_tab, "url", "N/A")}')
     except Exception as e:
-        logger.warning(f'[Strava] 自动打开浏览器失败，请手动打开链接: {e}')
+        logger.warning(f'[Strava] 使用 ChromiumPage 打开授权页失败，回退到系统浏览器: {e}')
+        try:
+            opened = bool(webbrowser.open(auth_url))
+            if opened:
+                logger.info('[Strava] 已尝试使用系统浏览器打开授权页')
+        except Exception as inner_e:
+            logger.warning(f'[Strava] 系统浏览器打开也失败: {inner_e}')
 
-    if opened:
-        logger.info('[Strava] 已尝试自动打开浏览器，等待授权回调...')
-    else:
-        logger.info('[Strava] 未能自动打开浏览器，请手动访问授权链接。')
+    wait_until = time.time() + 180
+    while time.time() < wait_until and not auth_result.get('code') and not auth_result.get('error'):
+        try:
+            if auth_tab:
+                current_url = getattr(auth_tab, 'url', '') or ''
+                if 'code=' in current_url:
+                    from urllib.parse import parse_qs
+                    parsed = urlparse(current_url)
+                    qs = parse_qs(parsed.query)
+                    auth_result['code'] = (qs.get('code') or [None])[0]
+                    auth_result['state'] = (qs.get('state') or [None])[0]
+                    break
+                if 'error=' in current_url:
+                    from urllib.parse import parse_qs
+                    parsed = urlparse(current_url)
+                    qs = parse_qs(parsed.query)
+                    auth_result['error'] = (qs.get('error') or [None])[0]
+                    break
+        except Exception:
+            pass
+        time.sleep(1)
 
-    server_thread.join(timeout=180)
     httpd.server_close()
+    try:
+        if auth_tab:
+            auth_tab.close()
+    except Exception:
+        pass
 
     if auth_result.get('error'):
         raise Exception(f"Strava 授权失败: {auth_result['error']}")
