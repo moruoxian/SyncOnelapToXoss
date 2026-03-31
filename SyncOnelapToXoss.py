@@ -1261,33 +1261,44 @@ def upload_files_to_igpsport(tab, valid_files):
 
         # 在模态框中找到隐藏的文件输入框
         file_input = None
-        import re
-        html = tab.html
-        pattern = re.compile(r'<input[^>]*>', re.IGNORECASE)
-        matches = pattern.findall(html)
-        upload_indices = []
-        for i, match in enumerate(matches):
-            s = match.lower()
-            if 'type="file"' in s or 'name="file"' in s or 'accept=".fit' in s or 'accept=".gpx' in s or 'accept=".tcx' in s:
-                logger.info(f"HTML中找到文件上传框 (索引: {i})")
-                logger.info(f"  {match}")
-                upload_indices.append(i)
-        
-        # 现在尝试定位到第10个元素
-        if upload_indices:
-            target_index = upload_indices[0]
+
+        # 优先用 CSS 选择器直接定位（更可靠）
+        for selector in ['css:input[type="file"]', 'css:input[name="file"]', 'tag:input']:
             try:
-                # 获取第 target_index 个 input 元素
-                file_input = tab.eles('input')[target_index]
-                logger.info(f"成功定位到第 {target_index} 个输入框")
-                ele_style = file_input.attr('style')
-                logger.info(f"  type={file_input.attr('type')}, name={file_input.attr('name')}, accept={file_input.attr('accept')}, style={ele_style}")
-                # 如果是隐藏的，通过 JavaScript 显示它，以便后续操作
-                if ele_style and 'display: none' in ele_style:
-                    logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
-                    file_input.run_js('this.style.display="block"; this.style.visibility="visible";')
+                logger.info(f"尝试用选择器定位文件输入框: {selector}")
+                if selector.startswith('css:'):
+                    ele = tab.ele(selector, timeout=2)
+                else:
+                    eles = tab.eles(selector)
+                    ele = None
+                    # 遍历所有 input，找符合条件的
+                    for e in eles:
+                        try:
+                            e_type = e.attr('type') or ''
+                            e_name = e.attr('name') or ''
+                            e_accept = e.attr('accept') or ''
+                            if e_type == 'file' or e_name == 'file' or '.fit' in e_accept:
+                                ele = e
+                                logger.info(f"在 input 列表中找到符合条件的元素")
+                                break
+                        except:
+                            continue
+                if ele:
+                    # 验证一下这个元素
+                    e_type = ele.attr('type') or ''
+                    e_name = ele.attr('name') or ''
+                    e_accept = ele.attr('accept') or ''
+                    e_style = ele.attr('style') or ''
+                    logger.info(f"找到文件输入框: type={e_type}, name={e_name}, accept={e_accept}")
+                    # 如果是隐藏的，通过 JavaScript 显示它
+                    if e_style and 'display: none' in e_style:
+                        logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
+                        ele.run_js('this.style.display="block"; this.style.visibility="visible"; this.style.opacity="1"; this.style.zIndex="9999";')
+                    file_input = ele
+                    break
             except Exception as e:
-                logger.error(f"定位第 {target_index} 个输入框失败: {e}")
+                logger.debug(f"选择器 {selector} 定位失败: {e}")
+                continue
 
         if not file_input:
             raise Exception("未找到iGPSport文件上传输入框")
@@ -1340,7 +1351,7 @@ def upload_files_to_igpsport(tab, valid_files):
                             text = (ele.text or '').strip()
                             if text:
                                 button_candidates.append((selector, text, ele))
-                                if text in candidate_texts or any(t in text for t in candidate_texts):
+                                if text in candidate_texts:
                                     upload_confirm_btn = ele
                                     logger.info(f"命中最终确认元素: selector={selector}, text={text}")
                                     break
