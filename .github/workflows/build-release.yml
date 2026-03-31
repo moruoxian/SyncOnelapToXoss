@@ -138,11 +138,26 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: List downloaded files
+      - name: Extract release notes for current tag
+        id: extract-notes
         run: |
-          ls -la
-          ls -la windows-package/ || true
-          ls -la linux-package/ || true
+          # Extract the current tag without refs/tags/ prefix
+          TAG_NAME="${GITHUB_REF_NAME#refs/tags/}"
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_OUTPUT
+
+          # Extract release notes for the current tag from RELEASE_NOTES.md
+          # Find the section starting with "## vX.Y.Z" and ending before the next "## vX.Y.Z"
+          awk -v tag="## ${TAG_NAME}" '
+            BEGIN { in_section=0; output=0 }
+            /^## v[0-9]+\.[0-9]+\.[0-9]+/ {
+              if (in_section) { exit }
+              if ($0 == tag) { in_section=1; next }
+            }
+            in_section { print }
+          ' RELEASE_NOTES.md > release_body.md
+
+          echo "Release notes extracted:"
+          cat release_body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -152,6 +167,6 @@ jobs:
             linux-package/*.tar.gz
           draft: false
           prerelease: false
-          generate_release_notes: true
+          body_path: release_body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
