@@ -1792,10 +1792,10 @@ def run_strava_auth_flow(config_file='settings.ini'):
 
     class CallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            from urllib.parse import urlparse, parse_qs
             parsed = urlparse(self.path)
             query = {}
             if '?' in self.path:
-                from urllib.parse import parse_qs
                 query = parse_qs(parsed.query)
             auth_result['code'] = (query.get('code') or [None])[0]
             auth_result['error'] = (query.get('error') or [None])[0]
