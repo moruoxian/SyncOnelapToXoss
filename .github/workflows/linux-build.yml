@@ -37,7 +37,8 @@ jobs:
 
       - name: Prepare package
         run: |
-          PACKAGE_NAME="SyncOnelapToXoss_${GITHUB_REF_NAME#refs/tags/}_Linux_x86_64"
+          REF_NAME="${GITHUB_REF_NAME#refs/tags/}"
+          PACKAGE_NAME="SyncOnelapToXoss_${REF_NAME}_Linux_x86_64"
           mkdir -p package
           cp dist/SyncOnelapToXoss package/
           chmod +x package/SyncOnelapToXoss
@@ -45,6 +46,8 @@ jobs:
             cp settings.template.ini package/settings.ini
           elif [ -f settings.ini.example ]; then
             cp settings.ini.example package/settings.ini
+          elif [ -f settings.ini ]; then
+            cp settings.ini package/
           fi
           if [ -f README.md ]; then
             cp README.md package/
@@ -62,3 +65,14 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ env.PACKAGE_NAME }}.tar.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

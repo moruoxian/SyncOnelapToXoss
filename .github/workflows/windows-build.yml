@@ -40,13 +40,21 @@ jobs:
       - name: Prepare package
         shell: pwsh
         run: |
-          $packageName = "SyncOnelapToXoss_${env:GITHUB_REF_NAME}_Windows_x86_64"
+          $refName = $env:GITHUB_REF_NAME
+          if ($refName -like 'refs/tags/*') {
+            $refName = $refName -replace 'refs/tags/', ''
+          }
+          $packageName = "SyncOnelapToXoss_${refName}_Windows_x86_64"
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item dist/SyncOnelapToXoss.exe package/ -Force
-          if (Test-Path settings.ini) { Copy-Item settings.ini package/ -Force }
-          if (Test-Path settings.ini.example) { Copy-Item settings.ini.example package/ -Force }
+          if (Test-Path settings.template.ini) {
+            Copy-Item settings.template.ini package/settings.ini -Force
+          } elseif (Test-Path settings.ini.example) {
+            Copy-Item settings.ini.example package/settings.ini -Force
+          } elseif (Test-Path settings.ini) {
+            Copy-Item settings.ini package/ -Force
+          }
           if (Test-Path README.md) { Copy-Item README.md package/ -Force }
-          if (Test-Path 使用说明.txt) { Copy-Item 使用说明.txt package/ -Force }
           if (Test-Path requirements.txt) { Copy-Item requirements.txt package/ -Force }
           Compress-Archive -Path package/* -DestinationPath "${packageName}.zip" -Force
           echo "PACKAGE_NAME=${packageName}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -58,3 +66,14 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}.zip
           if-no-files-found: error
           retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ env.PACKAGE_NAME }}.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
