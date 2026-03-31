@@ -1,0 +1,64 @@
+name: Linux Build
+
+on:
+  push:
+    branches:
+      - main
+      - release-*
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          pip install pyinstaller
+
+      - name: Build Linux executable
+        run: |
+          pyinstaller -F SyncOnelapToXoss.py --name SyncOnelapToXoss --noconfirm
+
+      - name: Prepare package
+        run: |
+          PACKAGE_NAME="SyncOnelapToXoss_${GITHUB_REF_NAME#refs/tags/}_Linux_x86_64"
+          mkdir -p package
+          cp dist/SyncOnelapToXoss package/
+          chmod +x package/SyncOnelapToXoss
+          if [ -f settings.template.ini ]; then
+            cp settings.template.ini package/settings.ini
+          elif [ -f settings.ini.example ]; then
+            cp settings.ini.example package/settings.ini
+          fi
+          if [ -f README.md ]; then
+            cp README.md package/
+          fi
+          if [ -f requirements.txt ]; then
+            cp requirements.txt package/
+          fi
+          cd package && tar czf "../${PACKAGE_NAME}.tar.gz" * && cd ..
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
