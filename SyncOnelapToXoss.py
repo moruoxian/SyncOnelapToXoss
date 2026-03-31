@@ -782,6 +782,31 @@ def login_igpsport_browser(tab, account, password):
     logger.info("使用浏览器登录iGPSport平台")
 
     try:
+        current_url = tab.url or ''
+        # 如果已经在主页/运动记录页，直接复用登录态
+        if ('app.igpsport.cn/user/home' in current_url) or ('app.igpsport.cn/sport/record' in current_url):
+            logger.info(f"检测到 iGPSport 已登录态，直接复用当前会话: {current_url}")
+            session_cookies = {}
+            try:
+                cookies = tab.cookies()
+                for cookie in cookies:
+                    session_cookies[cookie['name']] = cookie['value']
+            except Exception:
+                pass
+            return session_cookies
+
+        # 如果已经在 app.igpsport.cn 域下且不是登录页，也认为优先复用，再交给后续页面跳转处理
+        if 'app.igpsport.cn/' in current_url and '/login' not in current_url:
+            logger.info(f"检测到 iGPSport 应用内页面，尝试复用登录态: {current_url}")
+            session_cookies = {}
+            try:
+                cookies = tab.cookies()
+                for cookie in cookies:
+                    session_cookies[cookie['name']] = cookie['value']
+            except Exception:
+                pass
+            return session_cookies
+
         # 访问登录页面
         logger.info("正在访问iGPSport登录页面...")
         tab.get('https://login.passport.igpsport.cn/login?lang=zh-Hans')
@@ -967,9 +992,9 @@ def get_latest_activity_igpsport(tab):
     """从iGPSport获取最新活动时间"""
     logger.info("正在从iGPSport获取最新活动记录...")
     try:
-        # 确保在历史列表页
-        if 'history/list' not in tab.url:
-            tab.get('https://app.igpsport.cn/sport/history/list')
+        # 确保在运动记录页（新版 iGPSport 使用 /sport/record）
+        if '/sport/record' not in tab.url:
+            tab.get('https://app.igpsport.cn/sport/record')
             
         # 显式等待表格加载 (最多等待10秒)
         logger.info("等待iGPSport活动列表加载...")
@@ -1236,33 +1261,44 @@ def upload_files_to_igpsport(tab, valid_files):
 
         # 在模态框中找到隐藏的文件输入框
         file_input = None
-        import re
-        html = tab.html
-        pattern = re.compile(r'<input[^>]*>', re.IGNORECASE)
-        matches = pattern.findall(html)
-        upload_indices = []
-        for i, match in enumerate(matches):
-            s = match.lower()
-            if 'type="file"' in s or 'name="file"' in s or 'accept=".fit' in s or 'accept=".gpx' in s or 'accept=".tcx' in s:
-                logger.info(f"HTML中找到文件上传框 (索引: {i})")
-                logger.info(f"  {match}")
-                upload_indices.append(i)
-        
-        # 现在尝试定位到第10个元素
-        if upload_indices:
-            target_index = upload_indices[0]
+
+        # 优先用 CSS 选择器直接定位（更可靠）
+        for selector in ['css:input[type="file"]', 'css:input[name="file"]', 'tag:input']:
             try:
-                # 获取第 target_index 个 input 元素
-                file_input = tab.eles('input')[target_index]
-                logger.info(f"成功定位到第 {target_index} 个输入框")
-                ele_style = file_input.attr('style')
-                logger.info(f"  type={file_input.attr('type')}, name={file_input.attr('name')}, accept={file_input.attr('accept')}, style={ele_style}")
-                # 如果是隐藏的，通过 JavaScript 显示它，以便后续操作
-                if ele_style and 'display: none' in ele_style:
-                    logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
-                    file_input.run_js('this.style.display="block"; this.style.visibility="visible";')
+                logger.info(f"尝试用选择器定位文件输入框: {selector}")
+                if selector.startswith('css:'):
+                    ele = tab.ele(selector, timeout=2)
+                else:
+                    eles = tab.eles(selector)
+                    ele = None
+                    # 遍历所有 input，找符合条件的
+                    for e in eles:
+                        try:
+                            e_type = e.attr('type') or ''
+                            e_name = e.attr('name') or ''
+                            e_accept = e.attr('accept') or ''
+                            if e_type == 'file' or e_name == 'file' or '.fit' in e_accept:
+                                ele = e
+                                logger.info(f"在 input 列表中找到符合条件的元素")
+                                break
+                        except:
+                            continue
+                if ele:
+                    # 验证一下这个元素
+                    e_type = ele.attr('type') or ''
+                    e_name = ele.attr('name') or ''
+                    e_accept = ele.attr('accept') or ''
+                    e_style = ele.attr('style') or ''
+                    logger.info(f"找到文件输入框: type={e_type}, name={e_name}, accept={e_accept}")
+                    # 如果是隐藏的，通过 JavaScript 显示它
+                    if e_style and 'display: none' in e_style:
+                        logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
+                        ele.run_js('this.style.display="block"; this.style.visibility="visible"; this.style.opacity="1"; this.style.zIndex="9999";')
+                    file_input = ele
+                    break
             except Exception as e:
-                logger.error(f"定位第 {target_index} 个输入框失败: {e}")
+                logger.debug(f"选择器 {selector} 定位失败: {e}")
+                continue
 
         if not file_input:
             raise Exception("未找到iGPSport文件上传输入框")
@@ -1302,24 +1338,42 @@ def upload_files_to_igpsport(tab, valid_files):
             # 等待文件列表加载
             time.sleep(2)
 
-            # 点击"上传"按钮确认上传
+            # 点击“确认/上传”按钮完成最终提交
             try:
-                # 查找所有按钮，找到文本为"上传"的按钮
                 upload_confirm_btn = None
-                buttons = tab.eles('tag:button')
-                for btn in buttons:
-                    if btn.text and btn.text.strip() == '上传':
-                        upload_confirm_btn = btn
-                        break
+                candidate_texts = ['确认', '上传']
+                button_candidates = []
 
-                if upload_confirm_btn:
+                # 优先在按钮元素中查找
+                for selector in ['tag:button', 'tag:div', 'tag:span']:
+                    try:
+                        for ele in tab.eles(selector):
+                            text = (ele.text or '').strip()
+                            if text:
+                                button_candidates.append((selector, text, ele))
+                                if text in candidate_texts:
+                                    upload_confirm_btn = ele
+                                    logger.info(f"命中最终确认元素: selector={selector}, text={text}")
+                                    break
+                        if upload_confirm_btn:
+                            break
+                    except Exception:
+                        continue
+
+                if not upload_confirm_btn:
+                    preview = [f"{sel}:{txt}" for sel, txt, _ in button_candidates[:20]]
+                    logger.warning(f"未找到最终确认按钮（确认/上传）。当前候选元素文本: {preview}")
+                    return False
+
+                try:
+                    upload_confirm_btn.click(by_js=True)
+                except Exception:
                     upload_confirm_btn.click()
-                    logger.info("已点击'上传'确认按钮")
-                    time.sleep(8)  # 等待上传完成
-                else:
-                    logger.warning("未找到上传确认按钮")
+                logger.info("已点击最终确认按钮（确认/上传）")
+                time.sleep(8)  # 等待上传开始/处理
             except Exception as e:
-                logger.error(f"点击上传按钮失败: {e}")
+                logger.error(f"点击最终确认按钮失败: {e}")
+                return False
 
             # 检查是否有成功提示，或等待模态框关闭
             time.sleep(3)
@@ -1327,7 +1381,7 @@ def upload_files_to_igpsport(tab, valid_files):
             # 如果还有下一批，需要等待页面恢复
             if batch_start + max_files_per_batch < len(valid_files):
                 logger.info("等待页面恢复，准备下一批上传...")
-                tab.get('https://app.igpsport.cn/sport/history/list')
+                tab.get('https://app.igpsport.cn/sport/record')
                 time.sleep(3)
 
         logger.info("===== iGPSport上传流程完成 =====")
