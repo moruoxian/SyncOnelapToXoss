@@ -167,6 +167,7 @@ jobs:
             linux-package/*.tar.gz
           draft: false
           prerelease: false
+          make_latest: true
           body_path: release_body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
