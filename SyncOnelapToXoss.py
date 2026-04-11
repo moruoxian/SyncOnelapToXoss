@@ -21,10 +21,25 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # 导入配置 - 支持INI配置文件
 import configparser
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def get_app_dir():
+    """返回运行目录：源码模式用脚本目录，PyInstaller 单文件模式用 exe 所在目录"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return SCRIPT_DIR
+
+
+APP_DIR = get_app_dir()
+CONFIG_FILE_PATH = os.path.join(APP_DIR, 'settings.ini')
+STRAVA_STATE_FILE = os.path.join(APP_DIR, 'strava_upload_state.json')
 
 # ===== 新增：导入增量同步模块 =====
-import sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 try:
     from incremental_sync_v2 import IncrementalSync
     INCREMENTAL_SYNC_AVAILABLE = True
@@ -32,7 +47,8 @@ except ImportError as e:
     INCREMENTAL_SYNC_AVAILABLE = False
     print(f"⚠️ 增量同步模块未加载: {e}")
 
-def load_config_from_ini(config_file="settings.ini"):
+
+def load_config_from_ini(config_file=CONFIG_FILE_PATH):
     """从INI配置文件加载所有配置参数"""
     if not os.path.exists(config_file):
         print(f"配置文件 {config_file} 不存在，使用默认配置")
@@ -88,7 +104,7 @@ def load_config_from_ini(config_file="settings.ini"):
 
 # 配置加载逻辑 - 优先INI配置，否则使用默认配置
 print("🔧 正在加载配置...")
-ini_config = load_config_from_ini()
+ini_config = load_config_from_ini(CONFIG_FILE_PATH)
 
 if ini_config:
     # 使用INI配置
@@ -190,9 +206,6 @@ logger.info(f"当前操作系统: {platform.system()} {platform.release()}")
 logger.info(f"文件存储目录: {STORAGE_DIR}")
 logger.info(f"无头模式: {'启用' if HEADLESS_MODE else '禁用'}")
 logger.info("程序初始化完成")
-
-CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'settings.ini')
-STRAVA_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'strava_upload_state.json')
 
 # 标记独立命令模式；真正执行放到 run_strava_auth_flow 定义之后，但仍早于主同步流程
 STRAVA_AUTH_MODE = '--strava-auth' in sys.argv
@@ -1507,7 +1520,7 @@ def ensure_storage_dir_clean(directory):
         logger.error(f"处理存储文件夹时发生错误: {e}", exc_info=True)
 
 
-def update_ini_config_values(config_file="settings.ini", section="strava", updates=None):
+def update_ini_config_values(config_file=CONFIG_FILE_PATH, section="strava", updates=None):
     """更新 INI 配置文件中的指定字段"""
     if not updates:
         return
@@ -1549,7 +1562,7 @@ def exchange_strava_code_for_token(client_id, client_secret, code):
     return resp.json()
 
 
-def refresh_strava_token_if_needed(config_file='settings.ini'):
+def refresh_strava_token_if_needed(config_file=CONFIG_FILE_PATH):
     config = configparser.ConfigParser()
     config.read(config_file, encoding='utf-8-sig')
     if not config.has_section('strava'):
@@ -1682,7 +1695,7 @@ def classify_strava_error(err_text):
     return 'unknown', err_text
 
 
-def get_latest_activity_strava(config_file='settings.ini'):
+def get_latest_activity_strava(config_file=CONFIG_FILE_PATH):
     access_token = refresh_strava_token_if_needed(config_file)
     if not access_token:
         return None
@@ -1704,7 +1717,7 @@ def get_latest_activity_strava(config_file='settings.ini'):
     }
 
 
-def upload_files_to_strava(valid_files, config_file='settings.ini'):
+def upload_files_to_strava(valid_files, config_file=CONFIG_FILE_PATH):
     if not valid_files:
         logger.info('[Strava] 没有可上传文件，跳过')
         return {'ok': True, 'success': 0, 'skipped': 0, 'failed': 0}
@@ -1773,7 +1786,7 @@ def upload_files_to_strava(valid_files, config_file='settings.ini'):
     }
 
 
-def run_strava_auth_flow(config_file='settings.ini'):
+def run_strava_auth_flow(config_file=CONFIG_FILE_PATH):
     config = configparser.ConfigParser()
     config.read(config_file, encoding='utf-8-sig')
     if not config.has_section('strava'):
@@ -2674,7 +2687,7 @@ try:
     elif not (STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET):
         logger.info("未配置 Strava client_id/client_secret，跳过 Strava 上传")
     else:
-        strava_result = upload_files_to_strava(valid_files, 'settings.ini')
+        strava_result = upload_files_to_strava(valid_files, CONFIG_FILE_PATH)
         logger.info(f"Strava 上传摘要: 成功 {strava_result.get('success', 0)}，重复跳过 {strava_result.get('skipped', 0)}，失败 {strava_result.get('failed', 0)}")
         if strava_result.get('ok', False):
             logger.info("文件已成功提交到 Strava 平台")
