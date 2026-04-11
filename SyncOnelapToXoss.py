@@ -2278,7 +2278,7 @@ try:
 except Exception as e:
     logger.critical(f"顽鹿登录失败: {e}")
     tab.close()
-    exit(1)
+    sys.exit(1)
 
 def get_latest_activity_xoss(tab):
     """从行者平台获取最新活动时间"""
@@ -2441,7 +2441,7 @@ if not latest_sync_activity:
         logger.critical("❌ 未能从任何平台获取最新活动记录，且未显式启用 onelap_full_sync=true；为避免误触发全量同步，程序终止。")
         tab.close()
         session.close()
-        exit(2)
+        sys.exit(2)
 else:
     logger.info(f"✅ 同步基准确定: {sync_benchmark_platform}, 最新时间: {latest_sync_activity['activity_date']}")
 
@@ -2507,7 +2507,7 @@ except Exception as e:
     logger.critical("主流程发生致命错误", exc_info=True)
     tab.close()
     session.close()
-    exit(1)
+    sys.exit(1)
 
 # 从文件夹中递归查找符合条件的文件
 def get_valid_files(folder_path):
@@ -2525,14 +2525,15 @@ def get_valid_files(folder_path):
 
 # 获取符合条件的文件列表
 valid_files = get_valid_files(STORAGE_DIR)
-if not valid_files:
-    logger.warning("没有找到符合条件的文件。")
-    tab.close()
-    exit()
+has_forward_sync_files = bool(valid_files)
+if not has_forward_sync_files:
+    logger.warning("没有找到符合条件的文件，跳过 OneLap 正向上传步骤。")
 
 # === 步骤4：跳转到行者上传页面并分批上传文件 ===
 logger.info("===== 步骤4：开始上传文件到行者平台 =====")
-if not XOSS_ENABLE_SYNC:
+if not has_forward_sync_files:
+    logger.info("没有 OneLap 新文件，跳过行者平台上传")
+elif not XOSS_ENABLE_SYNC:
     logger.info("行者平台同步已禁用，跳过行者平台上传")
 elif not (XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']):
     logger.info("未配置行者账号或密码为默认值，跳过行者平台上传")
@@ -2611,7 +2612,9 @@ else:
 logger.info("===== 步骤5：上传文件到捷安特骑行平台 =====")
 try:
     # 检查是否启用了捷安特同步
-    if not GIANT_ENABLE_SYNC:
+    if not has_forward_sync_files:
+        logger.info("没有 OneLap 新文件，跳过捷安特平台上传")
+    elif not GIANT_ENABLE_SYNC:
         logger.info("捷安特平台同步已禁用，跳过捷安特平台上传")
     elif not (GIANT_ACCOUNT and GIANT_PASSWORD and GIANT_ACCOUNT not in ['139xxxxxx', ''] and GIANT_PASSWORD not in ['xxxxxx', '']):
         logger.info("未配置捷安特账号或密码为默认值，跳过捷安特平台上传")
@@ -2637,7 +2640,9 @@ except Exception as e:
 logger.info("===== 步骤6：上传文件到iGPSport平台 =====")
 try:
     # 检查是否启用了iGPSport同步
-    if not IGPSPORT_ENABLE_SYNC:
+    if not has_forward_sync_files:
+        logger.info("没有 OneLap 新文件，跳过iGPSport平台上传")
+    elif not IGPSPORT_ENABLE_SYNC:
         logger.info("iGPSport平台同步已禁用，跳过iGPSport平台上传")
     elif not (IGPSPORT_ACCOUNT and IGPSPORT_PASSWORD and IGPSPORT_ACCOUNT not in ['139xxxxxx', ''] and IGPSPORT_PASSWORD not in ['xxxxxx', '']):
         logger.info("未配置iGPSport账号或密码为默认值，跳过iGPSport平台上传")
@@ -2662,7 +2667,9 @@ except Exception as e:
 # === 步骤7：上传文件到 Strava 平台 ===
 logger.info("===== 步骤7：上传文件到 Strava 平台 =====")
 try:
-    if not STRAVA_ENABLE_SYNC:
+    if not has_forward_sync_files:
+        logger.info("没有 OneLap 新文件，跳过 Strava 上传")
+    elif not STRAVA_ENABLE_SYNC:
         logger.info("Strava 平台同步已禁用，跳过 Strava 上传")
     elif not (STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET):
         logger.info("未配置 Strava client_id/client_secret，跳过 Strava 上传")
@@ -2680,14 +2687,16 @@ except Exception as e:
 # === 步骤8：验证同步结果 ===
 logger.info("===== 步骤8：验证同步结果 =====")
 try:
-    if XOSS_ENABLE_SYNC and xoss_login_ok and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
+    if not has_forward_sync_files:
+        logger.info("没有 OneLap 新文件，跳过正向同步验证步骤")
+    elif XOSS_ENABLE_SYNC and xoss_login_ok and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
         logger.info("跳转到行者活动列表页面验证同步结果...")
         tab.get('https://www.imxingzhe.com/workouts/list')
         wait_xoss_activity_page_ready(tab, timeout=12)
-        
+
         logger.info("请检查行者平台的活动列表，确认文件是否已成功同步")
         logger.info("程序将在15秒后自动关闭，您可以手动查看最新的活动记录")
-        
+
         try:
             parsed = parse_xoss_latest_activity_from_html(tab.html)
             if parsed:
@@ -2698,7 +2707,7 @@ try:
         except Exception as e:
             logger.debug(f"获取验证数据时出错: {e}")
             logger.info("自动验证失败，请手动查看页面内容")
-        
+
         time.sleep(15)
     elif IGPSPORT_ENABLE_SYNC:
         logger.info("行者未配置，改为验证 iGPSport 最新记录日期...")
