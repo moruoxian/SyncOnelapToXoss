@@ -1004,36 +1004,46 @@ def login_igpsport_browser(tab, account, password):
 def get_latest_activity_igpsport(tab):
     """从iGPSport获取最新活动时间"""
     logger.info("正在从iGPSport获取最新活动记录...")
+    empty_result = {
+        'platform': 'igpsport',
+        'activity_date': None,
+        'time_obj': None,
+        'is_empty': True
+    }
     try:
         # 确保在运动记录页（新版 iGPSport 使用 /sport/record）
         if '/sport/record' not in tab.url:
             tab.get('https://app.igpsport.cn/sport/record')
-            
+
         # 显式等待表格加载 (最多等待10秒)
         logger.info("等待iGPSport活动列表加载...")
         # 等待数据行出现（注意：不是空行，而是有数据的行）
         if not tab.wait.eles_loaded('css:.ant-table-row', timeout=10):
             logger.warning("等待iGPSport活动记录超时或列表为空")
-            
+
             # 检查是否显示“暂无数据”
             no_data = tab.ele('text:暂无数据', timeout=1)
             if no_data:
                 logger.warning("页面显示'暂无数据'")
-                return None
+                return empty_result
             return None
-            
+
         # 获取所有数据行（使用 .ant-table-row 过滤掉表头或占位符）
         table_rows = tab.eles('css:.ant-table-row')
         if not table_rows:
             logger.warning("iGPSport未找到有效活动记录(行数为0)")
+            no_data = tab.ele('text:暂无数据', timeout=1)
+            if no_data:
+                logger.warning("页面显示'暂无数据'")
+                return empty_result
             # 再次尝试宽泛搜索
             table_rows = tab.eles('css:.ant-table-tbody > tr')
             if not table_rows:
                 return None
-            
+
         # 获取第一行数据（最新的）
         first_row = table_rows[0]
-        
+
         # 检查第一行是否为暂无数据
         if "暂无数据" in first_row.text:
             logger.warning("第一行为'暂无数据'，尝试等待并刷新...")
@@ -1042,15 +1052,23 @@ def get_latest_activity_igpsport(tab):
             # tab.refresh() # 刷新可能导致需要重新登录，这里只等待重试获取
             # 重新获取行
             if not tab.wait.eles_loaded('css:.ant-table-row', timeout=5):
+                no_data = tab.ele('text:暂无数据', timeout=1)
+                if no_data:
+                    logger.warning("重试后页面仍显示'暂无数据'")
+                    return empty_result
                 return None
             table_rows = tab.eles('css:.ant-table-row')
             if not table_rows:
+                no_data = tab.ele('text:暂无数据', timeout=1)
+                if no_data:
+                    logger.warning("重试后页面仍显示'暂无数据'")
+                    return empty_result
                 return None
             first_row = table_rows[0]
             if "暂无数据" in first_row.text:
                 logger.warning("重试后仍为'暂无数据'")
-                return None
-                
+                return empty_result
+
         try:
             date_td = first_row.ele('css:td.ant-table-column-sort', timeout=1)
         except Exception:
@@ -1113,22 +1131,22 @@ def get_latest_activity_igpsport(tab):
                             'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
                             'time_obj': latest_time
                         }
-        
+
         # 获取所有单元格文本
         # 我们需要找到时间列。通常包含日期格式如 YYYY-MM-DD HH:MM:SS
-        
+
         # 获取所有单元格文本
         # 注意：iGPSport的表格结构可能比较复杂，有时候 td 可能会被包含在其他元素中
         # 或者 eles('tag:td') 获取方式在某些版本的 DrissionPage 中表现不同
         # 我们尝试更稳健的方式：获取所有子 td 元素
         cells = first_row.eles('css:td')  # 使用CSS选择器更准确
-        
+
         # 如果还是获取不到，尝试获取所有文本并按换行符分割
         if not cells or len(cells) <= 1:
             logger.warning(f"使用 tag:td 只获取到 {len(cells) if cells else 0} 列，尝试分析行文本")
             row_text = first_row.text
             logger.info(f"行完整文本: {row_text}")
-            
+
             # 尝试直接在行文本中搜索日期
             # 匹配 YYYY.MM.DD
             match_dot_date = re.search(r'(\d{4})\.(\d{2})\.(\d{2})', row_text)
@@ -1141,7 +1159,7 @@ def get_latest_activity_igpsport(tab):
                     'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'time_obj': latest_time
                 }
-                
+
             # 匹配 YYYY-MM-DD
             match_date = re.search(r'(\d{4}-\d{2}-\d{2})', row_text)
             if match_date:
@@ -1153,9 +1171,9 @@ def get_latest_activity_igpsport(tab):
                     'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'time_obj': latest_time
                 }
-                
+
         latest_time = None
-        
+
         row_text = first_row.text or ""
         match_full = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', row_text)
         if match_full:
@@ -1184,7 +1202,7 @@ def get_latest_activity_igpsport(tab):
         for i, cell in enumerate(cells):
             text = cell.text.strip() if cell.text else ""
             logger.debug(f"第 {i+1} 列内容: '{text}'")
-            
+
             # 尝试匹配时间格式 YYYY-MM-DD HH:MM:SS
             # 使用 search 替代 match 以支持前后有空白字符的情况
             match_full = re.search(r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', text)
@@ -1193,7 +1211,7 @@ def get_latest_activity_igpsport(tab):
                 latest_time = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
                 logger.info(f"在第 {i+1} 列找到完整时间: {time_str}")
                 break
-                
+
             match_dot_date = re.search(r'(\d{4})\.(\d{2})\.(\d{2})', text)
             if match_dot_date:
                 date_str = f"{match_dot_date.group(1)}-{match_dot_date.group(2)}-{match_dot_date.group(3)}"
@@ -1212,7 +1230,7 @@ def get_latest_activity_igpsport(tab):
                 if not latest_time:
                     latest_time = datetime.strptime(date_str, '%Y-%m-%d')
                     logger.info(f"在第 {i+1} 列找到日期: {date_str} (继续查找是否有更精确时间)")
-                
+
         if latest_time:
             logger.info(f"iGPSport最新活动时间: {latest_time}")
             return {
@@ -1223,7 +1241,7 @@ def get_latest_activity_igpsport(tab):
         else:
             logger.warning("无法从iGPSport表格中解析出时间")
             return None
-            
+
     except Exception as e:
         logger.error(f"获取iGPSport最新活动失败: {e}")
         return None
@@ -1232,8 +1250,7 @@ def upload_files_to_igpsport(tab, valid_files):
     """上传文件到iGPSport平台"""
     logger.info("===== 开始上传文件到iGPSport平台 =====")
 
-    try:
-        # 访问运动记录页面
+    def ensure_record_page():
         logger.info("正在访问iGPSport运动记录页面...")
         if '/user/home' in tab.url:
             logger.info("当前在主页，点击'运动记录'进入记录页面")
@@ -1253,29 +1270,24 @@ def upload_files_to_igpsport(tab, valid_files):
         logger.info(f"当前页面URL: {tab.url}")
         logger.info(f"当前页面标题: {tab.title}")
 
-        # iGPSport 限制：每次最多上传9个文件
-        max_files_per_batch = 9
-        logger.info("定位导入按钮和文件输入框")
+    def open_import_modal_and_get_input():
+        ensure_record_page()
+        logger.info("重新打开导入弹窗并定位文件输入框")
 
-        # 找到并点击“导入运动记录”按钮
         import_btn = tab.ele('text:导入运动记录', timeout=5)
         logger.info(f"导入按钮类型: {import_btn.tag}")
         import_btn.click(by_js=True)
         logger.info("导入按钮点击成功，等待模态框加载")
         time.sleep(4)
 
-        # 等待模态框内容出现
         try:
-            batch_ele = tab.ele('text:批量导入运动', timeout=5)
+            tab.ele('text:批量导入运动', timeout=5)
             logger.info("批量导入运动模态框加载成功")
         except Exception as e:
             logger.error(f"模态框加载失败: {e}")
             raise
 
-        # 在模态框中找到隐藏的文件输入框
         file_input = None
-
-        # 优先用 CSS 选择器直接定位（更可靠）
         for selector in ['css:input[type="file"]', 'css:input[name="file"]', 'tag:input']:
             try:
                 logger.info(f"尝试用选择器定位文件输入框: {selector}")
@@ -1284,7 +1296,6 @@ def upload_files_to_igpsport(tab, valid_files):
                 else:
                     eles = tab.eles(selector)
                     ele = None
-                    # 遍历所有 input，找符合条件的
                     for e in eles:
                         try:
                             e_type = e.attr('type') or ''
@@ -1292,21 +1303,20 @@ def upload_files_to_igpsport(tab, valid_files):
                             e_accept = e.attr('accept') or ''
                             if e_type == 'file' or e_name == 'file' or '.fit' in e_accept:
                                 ele = e
-                                logger.info(f"在 input 列表中找到符合条件的元素")
+                                logger.info("在 input 列表中找到符合条件的元素")
                                 break
                         except:
                             continue
                 if ele:
-                    # 验证一下这个元素
                     e_type = ele.attr('type') or ''
                     e_name = ele.attr('name') or ''
                     e_accept = ele.attr('accept') or ''
-                    e_style = ele.attr('style') or ''
                     logger.info(f"找到文件输入框: type={e_type}, name={e_name}, accept={e_accept}")
-                    # 如果是隐藏的，通过 JavaScript 显示它
-                    if e_style and 'display: none' in e_style:
-                        logger.info("检测到输入框是隐藏的，通过 JavaScript 显示")
+                    try:
                         ele.run_js('this.style.display="block"; this.style.visibility="visible"; this.style.opacity="1"; this.style.zIndex="9999";')
+                        logger.info("已处理隐藏输入框")
+                    except Exception as e:
+                        logger.debug(f"修改输入框样式失败: {e}")
                     file_input = ele
                     break
             except Exception as e:
@@ -1317,26 +1327,20 @@ def upload_files_to_igpsport(tab, valid_files):
             raise Exception("未找到iGPSport文件上传输入框")
 
         logger.info(f"文件输入框找到，是否隐藏: {('display: none' in (file_input.attr('style') or ''))}")
+        return file_input
 
-        # 分批上传
+    try:
+        max_files_per_batch = 9
+
         for batch_start in range(0, len(valid_files), max_files_per_batch):
             batch_files = valid_files[batch_start:batch_start + max_files_per_batch]
             logger.info(f"正在处理批次 {batch_start // max_files_per_batch + 1}，共 {len(batch_files)} 个文件")
 
             try:
-                # 处理隐藏输入框
-                tab.run_js("""
-                const el = document.querySelector('input[name="file"]');
-                if (el) { el.style.display = 'block'; el.style.visibility = 'visible'; el.style.opacity = '1'; el.style.zIndex = '9999'; }
-                """)
-                logger.info("已处理隐藏输入框")
-                time.sleep(0.5)
+                file_input = open_import_modal_and_get_input()
             except Exception as e:
-                logger.debug(f"修改输入框样式失败: {e}")
-
-            # 直接使用file_input引用（避免再次查找）
-            if not file_input:
-                raise Exception("未找到iGPSport文件输入框")
+                logger.error(f"iGPSport打开导入弹窗或定位输入框失败: {e}")
+                return False
 
             try:
                 abs_paths = [os.path.abspath(p) for p in batch_files]
@@ -1348,16 +1352,13 @@ def upload_files_to_igpsport(tab, valid_files):
                 logger.error(f"iGPSport选择文件失败: {e}")
                 return False
 
-            # 等待文件列表加载
             time.sleep(2)
 
-            # 点击“确认/上传”按钮完成最终提交
             try:
                 upload_confirm_btn = None
                 candidate_texts = ['确认', '上传']
                 button_candidates = []
 
-                # 优先在按钮元素中查找
                 for selector in ['tag:button', 'tag:div', 'tag:span']:
                     try:
                         for ele in tab.eles(selector):
@@ -1383,15 +1384,13 @@ def upload_files_to_igpsport(tab, valid_files):
                 except Exception:
                     upload_confirm_btn.click()
                 logger.info("已点击最终确认按钮（确认/上传）")
-                time.sleep(8)  # 等待上传开始/处理
+                time.sleep(8)
             except Exception as e:
                 logger.error(f"点击最终确认按钮失败: {e}")
                 return False
 
-            # 检查是否有成功提示，或等待模态框关闭
             time.sleep(3)
 
-            # 如果还有下一批，需要等待页面恢复
             if batch_start + max_files_per_batch < len(valid_files):
                 logger.info("等待页面恢复，准备下一批上传...")
                 tab.get('https://app.igpsport.cn/sport/record')
@@ -2352,6 +2351,7 @@ logger.info("===== 步骤2：确定同步基准 =====")
 latest_sync_activity = None
 sync_benchmark_platform = None
 xoss_login_ok = False
+igpsport_empty_confirmed = False
 
 # 优先级1：行者 (XOSS)
 if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
@@ -2361,23 +2361,23 @@ if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in [
         tab.get('https://www.imxingzhe.com/login')
         logger.info(f"[DEBUG] 行者登录页已打开，当前URL: {tab.url}")
         # ... (原有的行者登录代码) ...
-        
+
         # 点击“我已阅读并同意”
         try:
             checkbox = tab.ele('.van-checkbox', timeout=1)
             if checkbox: checkbox.click()
         except: pass
-        
+
         # 输入账号
         tab.ele('@name=account').clear()
         tab.ele('@name=account').input(XOSS_ACCOUNT)
         tab.ele('@name=password').clear()
         tab.ele('@name=password').input(XOSS_PASSWORD)
-        
+
         # 点击登录
         clicked_selector = click_xoss_login_button(tab)
         logger.info(f"[DEBUG] 行者登录按钮点击方式: {clicked_selector}")
-        
+
         xoss_login_submitted = wait_xoss_login_success(tab, timeout=12)
         logger.info(f"[DEBUG] 行者提交登录后URL: {tab.url}, 标题: {tab.title}, login_success={xoss_login_submitted}")
         xoss_login_ok = xoss_login_submitted
@@ -2397,7 +2397,7 @@ if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in [
                     logger.warning("未能通过当前页面解析出行者最新活动时间")
             except Exception as e:
                 logger.error(f"解析行者最新活动时间失败: {e}")
-        
+
     except Exception as e:
         logger.error(f"行者登录或获取数据失败: {e}")
         xoss_login_ok = False
@@ -2412,9 +2412,15 @@ if not latest_sync_activity and IGPSPORT_ENABLE_SYNC and IGPSPORT_ACCOUNT and IG
         logger.info(f"[DEBUG] iGPSport 登录返回，当前URL: {tab.url}")
         result = get_latest_activity_igpsport(tab)
         if result:
-            latest_sync_activity = result
-            sync_benchmark_platform = 'igpsport'
-            logger.info(f"成功获取 iGPSport 最新记录: {result['activity_date']}")
+            if result.get('is_empty'):
+                igpsport_empty_confirmed = True
+                logger.warning("iGPSport 当前无活动记录，将按首次同步候选处理，并继续尝试其他平台基准")
+            else:
+                latest_sync_activity = result
+                sync_benchmark_platform = 'igpsport'
+                logger.info(f"成功获取 iGPSport 最新记录: {result['activity_date']}")
+        else:
+            logger.warning("未能确认 iGPSport 最新记录，继续尝试其他平台")
     except Exception as e:
         logger.error(f"iGPSport 获取基准失败: {e}")
 
@@ -2450,6 +2456,8 @@ if not latest_sync_activity and STRAVA_ENABLE_SYNC and STRAVA_CLIENT_ID and STRA
 if not latest_sync_activity:
     if ONELAP_FULL_SYNC:
         logger.warning("⚠️ 未能从任何平台获取最新活动记录，但已显式启用 onelap_full_sync=true，将执行全量同步！")
+    elif igpsport_empty_confirmed:
+        logger.warning("⚠️ iGPSport 当前无活动记录，将按首次同步处理，返回全部 OneLap 活动继续上传。")
     else:
         logger.critical("❌ 未能从任何平台获取最新活动记录，且未显式启用 onelap_full_sync=true；为避免误触发全量同步，程序终止。")
         tab.close()
