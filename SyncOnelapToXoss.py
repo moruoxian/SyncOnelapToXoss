@@ -720,18 +720,23 @@ def update_onelap_download_state(state, record_id, activity, filename, fit_url, 
 def extract_onelap_fit_key(detail_data, record):
     candidates = []
 
-    def add_candidate(value):
+    def add_candidate(value, priority):
         if value is None:
             return
         value = str(value).strip()
         if value:
-            candidates.append(value)
+            candidates.append((priority, value))
 
     def walk(value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if str(key).lower() in {'fiturl', 'fit_url', 'fit', 'fitkey', 'filekey', 'file_key', 'url', 'path'}:
-                    add_candidate(item)
+                key_lower = str(key).lower()
+                if key_lower in {'fiturl', 'fit_url'}:
+                    add_candidate(item, 0)
+                elif key_lower in {'fit', 'fitkey', 'filekey', 'file_key'}:
+                    add_candidate(item, 1)
+                elif key_lower in {'url', 'path'}:
+                    add_candidate(item, 2)
                 walk(item)
         elif isinstance(value, list):
             for item in value:
@@ -741,21 +746,39 @@ def extract_onelap_fit_key(detail_data, record):
     walk(detail_data)
 
     seen = set()
-    for value in candidates:
+    for _, value in sorted(candidates, key=lambda item: item[0]):
         if value in seen:
             continue
         seen.add(value)
-        if value.startswith('http://') or value.startswith('https://'):
-            parsed = urlparse(value)
-            tail = parsed.path.rsplit('/', 1)[-1] if parsed.path else ''
-            if tail:
-                return tail
-        if '/' in value:
-            tail = value.rsplit('/', 1)[-1]
-            if tail:
-                return tail
         return value
     return ''
+
+
+def build_onelap_fit_download_candidates(fit_url):
+    candidates = []
+    seen = set()
+
+    def add_candidate(value):
+        if value is None:
+            return
+        value = str(value).strip()
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    add_candidate(fit_url)
+    add_candidate(unquote(fit_url))
+
+    if fit_url.startswith('http://') or fit_url.startswith('https://'):
+        parsed = urlparse(fit_url)
+        add_candidate(parsed.path)
+        if parsed.path:
+            add_candidate(parsed.path.rsplit('/', 1)[-1])
+    elif '/' in fit_url:
+        add_candidate(fit_url.rsplit('/', 1)[-1])
+
+    return candidates
 
 
 def fetch_onelap_record_detail(session, record_id):
@@ -868,9 +891,28 @@ def download_fit_file(session, activity, state, storage_dir=STORAGE_DIR):
     if not fit_url:
         raise RuntimeError(f'未找到活动 {record_id} 的 fitUrl')
 
-    fit_key = base64.b64encode(fit_url.encode('utf-8')).decode('ascii')
-    response = session.get(ONELAP_DOWNLOAD_API.format(fit_key=fit_key), timeout=60, stream=True)
-    response.raise_for_status()
+    response = None
+    last_error = None
+    used_fit_key_source = ''
+    for fit_key_source in build_onelap_fit_download_candidates(fit_url):
+        fit_key = base64.b64encode(fit_key_source.encode('utf-8')).decode('ascii')
+        try:
+            response = session.get(ONELAP_DOWNLOAD_API.format(fit_key=fit_key), timeout=60, stream=True)
+            response.raise_for_status()
+            used_fit_key_source = fit_key_source
+            break
+        except Exception as e:
+            last_error = e
+            logger.warning(f'[OneLap] 下载参数失败，尝试下一个候选: {fit_key_source} ({e})')
+            try:
+                if response is not None:
+                    response.close()
+            except Exception:
+                pass
+            response = None
+
+    if response is None:
+        raise RuntimeError(f'活动 {record_id} 下载失败，fitUrl={fit_url}，最后错误: {last_error}')
 
     filename = infer_onelap_filename(activity, response, record_id)
     final_path = os.path.join(storage_dir, filename)
@@ -880,12 +922,14 @@ def download_fit_file(session, activity, state, storage_dir=STORAGE_DIR):
         logger.info(f'[OneLap] 文件已存在，跳过下载: {filename}')
         update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True)
         save_onelap_download_state(state)
+        response.close()
         return final_path
 
     if os.path.exists(part_path):
         os.remove(part_path)
 
     logger.info(f'[OneLap] 开始下载: {filename}')
+    logger.info(f'[OneLap] 使用下载参数源: {used_fit_key_source}')
     try:
         with open(part_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -896,6 +940,8 @@ def download_fit_file(session, activity, state, storage_dir=STORAGE_DIR):
         if os.path.exists(part_path):
             os.remove(part_path)
         raise
+    finally:
+        response.close()
 
     update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True)
     save_onelap_download_state(state)
