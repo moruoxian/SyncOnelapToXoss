@@ -2,6 +2,7 @@
 # 文件类型：py
 # 文件名称：SyncOnelapToXoss.py
 # 功能：从OneLap平台下载最新运动数据并同步到行者平台和捷安特骑行平台
+import base64
 from math import log
 from DrissionPage import ChromiumPage, ChromiumOptions
 import os
@@ -11,8 +12,10 @@ from datetime import datetime
 import requests
 import hashlib
 import logging
+import random
 import shutil
 from bs4 import BeautifulSoup  # 添加BeautifulSoup用于HTML解析
+import string
 from urllib.parse import unquote, urlparse, quote
 import threading
 import webbrowser
@@ -36,6 +39,14 @@ def get_app_dir():
 APP_DIR = get_app_dir()
 CONFIG_FILE_PATH = os.path.join(APP_DIR, 'settings.ini')
 STRAVA_STATE_FILE = os.path.join(APP_DIR, 'strava_upload_state.json')
+ONELAP_DOWNLOAD_STATE_FILE = os.path.join(APP_DIR, 'onelap_download_state.json')
+ONELAP_BASE_WEB_URL = 'https://www.onelap.cn'
+ONELAP_BASE_APP_URL = 'https://u.onelap.cn'
+ONELAP_LIST_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/list'
+ONELAP_DETAIL_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/{{record_id}}'
+ONELAP_DOWNLOAD_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/fit_content/{{fit_key}}'
+ONELAP_SIGN_KEY = 'fe9f8382418fcdeb136461cac6acae7b'
+ONELAP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
 # ===== 新增：导入增量同步模块 =====
 if SCRIPT_DIR not in sys.path:
@@ -45,7 +56,7 @@ try:
     INCREMENTAL_SYNC_AVAILABLE = True
 except ImportError as e:
     INCREMENTAL_SYNC_AVAILABLE = False
-    print(f"⚠️ 增量同步模块未加载: {e}")
+    print(f"[WARN]增量同步模块未加载: {e}")
 
 
 def load_config_from_ini(config_file=CONFIG_FILE_PATH):
@@ -57,7 +68,7 @@ def load_config_from_ini(config_file=CONFIG_FILE_PATH):
     try:
         config = configparser.ConfigParser()
         config.read(config_file, encoding='utf-8-sig')  # 处理BOM字符
-        print(f"✅ 成功从 {config_file} 加载配置")
+        print(f"[OK]成功从 {config_file} 加载配置")
         
         cfg = {}
         cfg['LOG_LEVEL'] = config.get('app', 'log_level', fallback='INFO')
@@ -99,11 +110,11 @@ def load_config_from_ini(config_file=CONFIG_FILE_PATH):
         
         return cfg
     except Exception as e:
-        print(f"❌ 读取INI配置文件失败: {e}")
+        print(f"[ERROR]读取INI配置文件失败: {e}")
         return None
 
 # 配置加载逻辑 - 优先INI配置，否则使用默认配置
-print("🔧 正在加载配置...")
+print("[INIT]正在加载配置...")
 ini_config = load_config_from_ini(CONFIG_FILE_PATH)
 
 if ini_config:
@@ -143,25 +154,25 @@ if ini_config:
     
     # 配置验证提示
     if ONELAP_ACCOUNT in ['139xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的OneLap账号")
+        print("[WARN]请在 settings.ini 中配置正确的OneLap账号")
     if ONELAP_PASSWORD in ['xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的OneLap密码")
+        print("[WARN]请在 settings.ini 中配置正确的OneLap密码")
     if XOSS_ENABLE_SYNC:
         if XOSS_ACCOUNT in ['139xxxxxx', '']:
-            print("⚠️ 请在 settings.ini 中配置正确的行者账号")  
+            print("[WARN]请在 settings.ini 中配置正确的行者账号")  
         if XOSS_PASSWORD in ['xxxxxx', '']:
-            print("⚠️ 请在 settings.ini 中配置正确的行者密码")
+            print("[WARN]请在 settings.ini 中配置正确的行者密码")
     if GIANT_ACCOUNT in ['139xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的捷安特账号")
+        print("[WARN]请在 settings.ini 中配置正确的捷安特账号")
     if GIANT_PASSWORD in ['xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的捷安特密码")
+        print("[WARN]请在 settings.ini 中配置正确的捷安特密码")
     if IGPSPORT_ACCOUNT in ['139xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的iGPSport账号")
+        print("[WARN]请在 settings.ini 中配置正确的iGPSport账号")
     if IGPSPORT_PASSWORD in ['xxxxxx', '']:
-        print("⚠️ 请在 settings.ini 中配置正确的iGPSport密码")
+        print("[WARN]请在 settings.ini 中配置正确的iGPSport密码")
 else:
     # 使用默认配置
-    print("📄 使用默认配置")
+    print("[INFO]使用默认配置")
     LOG_LEVEL = 'INFO'
     HEADLESS_MODE = False
     ONELAP_ACCOUNT = ''
@@ -210,50 +221,6 @@ logger.info("程序初始化完成")
 # 标记独立命令模式；真正执行放到 run_strava_auth_flow 定义之后，但仍早于主同步流程
 STRAVA_AUTH_MODE = '--strava-auth' in sys.argv
 STRAVA_TOKEN_REFRESH_MARGIN = 3600
-
-
-def save_strava_config(updates, config_file=CONFIG_FILE_PATH):
-    """将 Strava token/配置写回 settings.ini"""
-    config = configparser.ConfigParser()
-    config.read(config_file, encoding='utf-8-sig')
-    if not config.has_section('strava'):
-        config.add_section('strava')
-    for key, value in updates.items():
-        config.set('strava', key, str(value))
-    with open(config_file, 'w', encoding='utf-8') as f:
-        config.write(f)
-
-
-def build_strava_redirect_uri(port=8765):
-    return f'http://127.0.0.1:{port}/callback'
-
-
-def build_strava_auth_url(client_id, port=8765):
-    redirect_uri = build_strava_redirect_uri(port)
-    scope = 'activity:write,activity:read_all'
-    return (
-        'https://www.strava.com/oauth/authorize'
-        f'?client_id={client_id}'
-        '&response_type=code'
-        f'&redirect_uri={quote(redirect_uri, safe="")}'
-        '&approval_prompt=auto'
-        f'&scope={quote(scope, safe=",")}'
-    )
-
-
-def exchange_strava_code_for_token(client_id, client_secret, code):
-    response = requests.post(
-        'https://www.strava.com/api/v3/oauth/token',
-        data={
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'code': code,
-            'grant_type': 'authorization_code'
-        },
-        timeout=20
-    )
-    response.raise_for_status()
-    return response.json()
 
 
 # 定义函数
@@ -522,92 +489,419 @@ def create_retry_session():
     session.mount('https://', adapter)
     return session
 
+
 def login_onelap_browser(tab, account, password):
-    """使用现有浏览器标签页登录顽鹿账号"""
+    """使用现有浏览器标签页登录顽鹿账号，并返回 token/cookies 上下文"""
     logger.info("使用浏览器登录顽鹿账号")
-    
+
     try:
-        # 访问顽鹿登录页面
         logger.info("正在访问顽鹿登录页面...")
-        tab.get('https://www.onelap.cn/login.html')
-        time.sleep(3)  # 等待页面加载
-        
+        tab.get(f'{ONELAP_BASE_WEB_URL}/login.html')
+        time.sleep(3)
+
         logger.info(f"顽鹿登录页面标题: {tab.title}")
         logger.info(f"顽鹿当前URL: {tab.url}")
-        
-        # 输入账号信息
-        try:
-            # 查找用户名输入框 - 根据提供的HTML结构
-            username_input = tab.ele('.from1 login_1', timeout=5)
-            if username_input:
-                username_input.clear()
-                username_input.input(account)
-                logger.info("已输入顽鹿账号信息")
-            else:
-                raise Exception("未找到用户名输入框")
-        except Exception as e:
-            logger.error(f"输入用户名失败: {e}")
-            raise
-        
-        # 输入密码信息
-        try:
-            # 查找密码输入框
-            password_input = tab.ele('.from1 login_password ', timeout=5)
-            if password_input:
-                password_input.clear()
-                password_input.input(password)
-                logger.info("已输入顽鹿密码信息")
-            else:
-                raise Exception("未找到密码输入框")
-        except Exception as e:
-            logger.error(f"输入密码失败: {e}")
-            raise
-        
-        # 点击登录按钮
-        try:
-         
-            tab.ele('.from_yellow_btn', timeout=5).click()
-            logger.info("已点击顽鹿登录按钮")
-           
-        except Exception as e:
-            logger.error(f"点击登录按钮失败: {e}")
-            raise
-        
-        # 等待登录完成
+
+        username_input = tab.ele('.from1 login_1', timeout=5)
+        if not username_input:
+            raise Exception("未找到用户名输入框")
+        username_input.clear()
+        username_input.input(account)
+        logger.info("已输入顽鹿账号信息")
+
+        password_input = tab.ele('.from1 login_password ', timeout=5)
+        if not password_input:
+            raise Exception("未找到密码输入框")
+        password_input.clear()
+        password_input.input(password)
+        logger.info("已输入顽鹿密码信息")
+
+        tab.ele('.from_yellow_btn', timeout=5).click()
+        logger.info("已点击顽鹿登录按钮")
+        logger.info("如果出现验证码/二次确认，请在浏览器中手动完成")
+
+        if not wait_for_onelap_login_result(tab, timeout=90):
+            raise Exception(f"顽鹿登录失败，当前URL: {tab.url}")
+
+        tab.get(f'{ONELAP_BASE_APP_URL}/analysis')
         time.sleep(5)
-        
-        # 检查登录是否成功 - 通过URL变化或页面内容判断
-        current_url = tab.url
-        logger.info(f"登录后URL: {current_url}")
-        
-        # 如果还在登录页面，可能登录失败
-        if 'login.html' in current_url:
-            # 检查是否有错误提示
-            try:
-                error_elements = tab.eles('.error_log')
-                for error_elem in error_elements:
-                    if error_elem.text and error_elem.text.strip():
-                        logger.error(f"顽鹿登录错误: {error_elem.text.strip()}")
-                raise Exception("顽鹿登录失败，仍在登录页面")
-            except:
-                logger.error("顽鹿登录失败")
-                raise
-        
-        # 获取登录后的cookies
-        cookies = tab.cookies()
-        logger.info("成功获取顽鹿登录cookies")
-        
-        # 构造session的cookies
-        session_cookies = {}
-        for cookie in cookies:
-            session_cookies[cookie['name']] = cookie['value']
-        
-        logger.info("顽鹿登录成功！")
-        return session_cookies
-        
+
+        auth_context = get_onelap_auth_context(tab)
+        if not auth_context.get('token'):
+            raise Exception('未能从 localStorage 读取 token')
+
+        logger.info(f"顽鹿登录成功，token长度: {len(auth_context['token'])}")
+        return auth_context
+
     except Exception as e:
         logger.error(f"顽鹿浏览器登录失败: {e}")
         raise
+
+
+
+
+def rand_nonce(length=16):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
+
+def replace_empty_with_none(value):
+    if isinstance(value, dict):
+        return {k: replace_empty_with_none(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [replace_empty_with_none(v) for v in value]
+    if value == '':
+        return None
+    return value
+
+
+def process_sign_params(params):
+    result = {}
+    for key, value in (params or {}).items():
+        if isinstance(value, list):
+            if value and isinstance(value[0], dict):
+                result[key] = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+            else:
+                result[key] = ','.join(str(v) for v in value)
+        elif isinstance(value, dict):
+            result[key] = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        else:
+            result[key] = value
+    return result
+
+
+def generate_onelap_sign_headers(params):
+    nonce = rand_nonce(16)
+    timestamp = str(int(time.time()))
+    normalized = process_sign_params(replace_empty_with_none(params or {}))
+    all_params = {**normalized, 'nonce': nonce, 'timestamp': timestamp}
+    parts = []
+    for key in sorted(all_params.keys()):
+        value = all_params[key]
+        if value is not None:
+            parts.append(f'{key}={value}')
+    string_to_sign = '&'.join(parts) + f'&key={ONELAP_SIGN_KEY}'
+    sign = hashlib.md5(string_to_sign.encode('utf-8')).hexdigest()
+    return {'nonce': nonce, 'timestamp': timestamp, 'sign': sign}
+
+
+def wait_for_onelap_login_result(tab, timeout=90):
+    end = time.time() + timeout
+    while time.time() < end:
+        current_url = tab.url or ''
+        if 'u.onelap.cn' in current_url and 'login.html' not in current_url:
+            return True
+        user_info = tab.run_js("return localStorage.getItem('userInfo');")
+        if user_info:
+            return True
+        time.sleep(1)
+    return False
+
+
+def get_onelap_auth_context(tab):
+    token = tab.run_js("return localStorage.getItem('token');")
+    user_info_raw = tab.run_js("return localStorage.getItem('userInfo');")
+    user_info = None
+    if user_info_raw:
+        try:
+            user_info = json.loads(user_info_raw)
+        except Exception:
+            user_info = None
+
+    if not token and isinstance(user_info, list) and user_info and isinstance(user_info[0], dict):
+        token = user_info[0].get('token')
+    if not token and isinstance(user_info, dict):
+        token = user_info.get('token')
+
+    cookies = {}
+    for cookie in tab.cookies():
+        cookies[cookie['name']] = cookie['value']
+
+    return {'token': token or '', 'cookies': cookies, 'user_info': user_info}
+
+
+def build_onelap_api_session(token, cookies_dict, session=None):
+    session = session or create_retry_session()
+    session.headers.update({
+        'User-Agent': ONELAP_USER_AGENT,
+        'Authorization': token,
+        'Origin': ONELAP_BASE_APP_URL,
+        'Referer': f'{ONELAP_BASE_APP_URL}/analysis',
+    })
+    session.cookies.update(cookies_dict or {})
+    return session
+
+
+def get_onelap_record_id(activity):
+    return str(activity.get('_id') or activity.get('id') or activity.get('record_id') or '').strip()
+
+
+def parse_onelap_activity_time(activity):
+    candidates = []
+    if isinstance(activity, dict):
+        candidates.extend([
+            activity.get('start_riding_time'),
+            activity.get('startTime'),
+            activity.get('created_at'),
+            activity.get('updated_at'),
+            activity.get('date'),
+        ])
+
+    def parse_candidate(value):
+        if isinstance(value, int):
+            if value <= 0:
+                return None
+            timestamp = value / 1000 if value > 10**11 else value
+            dt = datetime.fromtimestamp(timestamp)
+            return dt if dt.year >= 2000 else None
+        if isinstance(value, float):
+            if value <= 0:
+                return None
+            timestamp = value / 1000 if value > 10**11 else value
+            dt = datetime.fromtimestamp(timestamp)
+            return dt if dt.year >= 2000 else None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    return dt if dt.year >= 2000 else None
+                except Exception:
+                    pass
+            try:
+                dt = datetime.fromisoformat(text.replace('Z', '+00:00')).replace(tzinfo=None)
+                return dt if dt.year >= 2000 else None
+            except Exception:
+                return None
+        return None
+
+    for candidate in candidates:
+        parsed = parse_candidate(candidate)
+        if parsed:
+            return parsed
+    return None
+
+
+def load_onelap_download_state(state_file=ONELAP_DOWNLOAD_STATE_FILE):
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception as e:
+        logger.warning(f'[OneLap] 读取下载状态失败: {e}')
+    return {}
+
+
+def save_onelap_download_state(state, state_file=ONELAP_DOWNLOAD_STATE_FILE):
+    try:
+        with open(state_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f'[OneLap] 保存下载状态失败: {e}')
+
+
+def update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True):
+    if not record_id:
+        return
+    state[record_id] = {
+        'downloaded': downloaded,
+        'filename': filename or '',
+        'fitUrl': fit_url or '',
+        'created_at': activity.get('created_at'),
+        'downloaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S') if downloaded else '',
+        'name': str(activity.get('name') or ''),
+    }
+
+
+def extract_onelap_fit_key(detail_data, record):
+    candidates = []
+
+    def add_candidate(value):
+        if value is None:
+            return
+        value = str(value).strip()
+        if value:
+            candidates.append(value)
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).lower() in {'fiturl', 'fit_url', 'fit', 'fitkey', 'filekey', 'file_key', 'url', 'path'}:
+                    add_candidate(item)
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(record)
+    walk(detail_data)
+
+    seen = set()
+    for value in candidates:
+        if value in seen:
+            continue
+        seen.add(value)
+        if value.startswith('http://') or value.startswith('https://'):
+            parsed = urlparse(value)
+            tail = parsed.path.rsplit('/', 1)[-1] if parsed.path else ''
+            if tail:
+                return tail
+        if '/' in value:
+            tail = value.rsplit('/', 1)[-1]
+            if tail:
+                return tail
+        return value
+    return ''
+
+
+def fetch_onelap_record_detail(session, record_id):
+    response = session.get(ONELAP_DETAIL_API.format(record_id=record_id), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_activities(session, auth_context, latest_sync_activity):
+    """获取活动列表数据（新 OneLap API）"""
+    logger.info('获取活动列表数据')
+
+    cookies_dict = (auth_context or {}).get('cookies') or {}
+    token = str((auth_context or {}).get('token') or '').strip()
+    if cookies_dict:
+        session.cookies.update(cookies_dict)
+    session.headers.update({
+        'User-Agent': ONELAP_USER_AGENT,
+        'Origin': ONELAP_BASE_APP_URL,
+        'Referer': f'{ONELAP_BASE_APP_URL}/analysis',
+    })
+    if token:
+        session.headers['Authorization'] = token
+
+    benchmark_time = latest_sync_activity.get('time_obj') if latest_sync_activity else None
+    page = 1
+    page_size = 20
+    collected = []
+
+    while True:
+        payload = {'page': page, 'limit': page_size}
+        headers = generate_onelap_sign_headers(payload)
+        response = session.post(ONELAP_LIST_API, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        page_data = (data.get('data') or {}) if isinstance(data, dict) else {}
+        items = page_data.get('list') or []
+
+        if not items:
+            break
+
+        stop_paging = False
+        for activity in items:
+            if benchmark_time:
+                activity_time = parse_onelap_activity_time(activity)
+                if activity_time and activity_time <= benchmark_time:
+                    stop_paging = True
+                    continue
+            collected.append(activity)
+
+        logger.info(f'[OneLap] 第 {page} 页获取 {len(items)} 条，待处理累计 {len(collected)} 条')
+
+        total = int(page_data.get('total') or 0)
+        total_pages = int(page_data.get('pages') or 0)
+        if stop_paging:
+            logger.info('[OneLap] 已触及同步基准，停止继续翻页')
+            break
+        if total_pages and page >= total_pages:
+            break
+        if total and page * page_size >= total:
+            break
+        page += 1
+        time.sleep(0.2)
+
+    if benchmark_time:
+        logger.info(f'筛选到 {len(collected)} 个比基准时间更新的OneLap活动')
+    else:
+        logger.info('没有同步基准记录，返回所有OneLap活动')
+    return collected
+
+
+def infer_onelap_filename(activity, response, record_id):
+    content_disposition = response.headers.get('Content-Disposition') or response.headers.get('content-disposition') or ''
+    if content_disposition:
+        match = re.search(r"filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?", content_disposition, flags=re.IGNORECASE)
+        if match:
+            filename = unquote(match.group(1) or match.group(2))
+            if filename:
+                safe_name = re.sub(r'[<>:"/\\|?*]+', '_', filename).strip().strip('.')
+                return safe_name if safe_name.lower().endswith('.fit') else f'{safe_name}.fit'
+
+    name = activity.get('name') or activity.get('start_riding_time') or record_id or 'activity'
+    safe_name = re.sub(r'[<>:"/\\|?*]+', '_', str(name)).strip().strip('.')
+    return safe_name if safe_name.lower().endswith('.fit') else f'{safe_name}.fit'
+
+
+def ensure_storage_dir(directory):
+    os.makedirs(directory, exist_ok=True)
+
+
+def download_fit_file(session, activity, state, storage_dir=STORAGE_DIR):
+    """下载单个 FIT 文件（新 OneLap API）"""
+    ensure_storage_dir(storage_dir)
+
+    record_id = get_onelap_record_id(activity)
+    if not record_id:
+        logger.warning('[OneLap] 跳过无 record_id 的活动')
+        return None
+
+    state_item = state.get(record_id) or {}
+    existing_name = state_item.get('filename') or ''
+    if existing_name:
+        existing_path = os.path.join(storage_dir, existing_name)
+        if state_item.get('downloaded') and os.path.exists(existing_path) and os.path.getsize(existing_path) > 0:
+            logger.info(f'[OneLap] 已在状态中标记且文件存在，跳过下载: {existing_name}')
+            return existing_path
+
+    detail_data = fetch_onelap_record_detail(session, record_id)
+    fit_url = extract_onelap_fit_key(detail_data, activity)
+    if not fit_url:
+        raise RuntimeError(f'未找到活动 {record_id} 的 fitUrl')
+
+    fit_key = base64.b64encode(fit_url.encode('utf-8')).decode('ascii')
+    response = session.get(ONELAP_DOWNLOAD_API.format(fit_key=fit_key), timeout=60, stream=True)
+    response.raise_for_status()
+
+    filename = infer_onelap_filename(activity, response, record_id)
+    final_path = os.path.join(storage_dir, filename)
+    part_path = f'{final_path}.part'
+
+    if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+        logger.info(f'[OneLap] 文件已存在，跳过下载: {filename}')
+        update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True)
+        save_onelap_download_state(state)
+        return final_path
+
+    if os.path.exists(part_path):
+        os.remove(part_path)
+
+    logger.info(f'[OneLap] 开始下载: {filename}')
+    try:
+        with open(part_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        os.replace(part_path, final_path)
+    except Exception:
+        if os.path.exists(part_path):
+            os.remove(part_path)
+        raise
+
+    update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True)
+    save_onelap_download_state(state)
+    logger.info(f'[OneLap] 文件下载完成: {final_path}')
+    return final_path
+
 
 def login_giant_browser(tab, account, password):
     """使用现有浏览器标签页登录捷安特骑行平台"""
@@ -1403,122 +1697,6 @@ def upload_files_to_igpsport(tab, valid_files):
         logger.error(f"上传到iGPSport失败: {e}")
         return False
 
-def fetch_activities(session, cookies_dict, latest_sync_activity):
-    """获取活动列表数据"""
-    logger.info("获取活动列表数据")
-    
-    # 将cookies字典转换为Cookie字符串
-    cookie_string = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
-    headers = {
-        'Cookie': cookie_string,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    # 更新session的cookies
-    session.cookies.update(cookies_dict)
-
-    try:
-        response = session.get(
-            "http://u.onelap.cn/analysis/list",
-            headers=headers,
-            timeout=10
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        filtered = data['data']
-
-        # 如果有最新的活动基准记录，只同步比它更新的活动
-        if latest_sync_activity:
-            try:
-                # 获取基准时间对象
-                # 注意：latest_sync_activity 可能来自不同平台，结构略有差异
-                # 但我们在 get_latest_activity_* 函数中都统一了 'time_obj' 字段
-                benchmark_time = latest_sync_activity.get('time_obj')
-                
-                # 如果没有预处理好的 time_obj，尝试解析 activity_date
-                if not benchmark_time and latest_sync_activity.get('activity_date'):
-                    time_str = latest_sync_activity['activity_date']
-                    # 尝试解析...
-                    # (此处省略复杂的解析逻辑，假设已在基准获取函数中处理好)
-                    pass
-
-                if benchmark_time:
-                    logger.info(f"增量同步基准时间: {benchmark_time}")
-                    # 筛选出比基准时间更新的OneLap活动
-                    activities_after_matched = []
-                    for activity in filtered:
-                        try:
-                            # created_at 是秒级 Unix 时间戳
-                            created_at = activity['created_at']
-                            if isinstance(created_at, int):
-                                # 直接使用秒级时间戳
-                                onelap_time = datetime.fromtimestamp(created_at)
-                            elif isinstance(created_at, str):
-                                # 如果是字符串，尝试解析ISO格式
-                                onelap_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                onelap_time = onelap_time.replace(tzinfo=None)
-                            else:
-                                logger.warning(f"未知的时间格式: {created_at} ({type(created_at)})")
-                                # 保守地包含该活动
-                                activities_after_matched.append(activity)
-                                continue
-                                
-                            if onelap_time > benchmark_time:
-                                activities_after_matched.append(activity)
-                        except Exception as e:
-                            logger.debug(f"解析OneLap活动时间失败: {e}, created_at={activity.get('created_at')}")
-                            # 如果时间解析失败，保守地包含该活动
-                            activities_after_matched.append(activity)
-                    
-                    logger.info(f"筛选到 {len(activities_after_matched)} 个比基准时间更新的OneLap活动")
-                    return activities_after_matched
-                else:
-                    logger.warning("无法解析基准活动时间，返回所有OneLap活动")
-                    return filtered
-            except Exception as e:
-                logger.error(f"处理基准活动时间时出错: {e}")
-                return filtered
-        else:
-            logger.info("没有同步基准记录，返回所有OneLap活动")
-            return filtered
-    except Exception as e:
-        logger.error("获取活动列表失败", exc_info=True)
-        raise
-
-def ensure_storage_dir_clean(directory):
-    """确保存储文件夹存在且为空状态"""
-    try:
-        # 检查文件夹是否存在
-        if not os.path.exists(directory):
-            # 文件夹不存在，创建它
-            os.makedirs(directory, exist_ok=True)
-            logger.info(f"创建存储文件夹: {directory}")
-            return
-        
-        # 文件夹存在，检查是否有内容
-        items = os.listdir(directory)
-        if not items:
-            # 文件夹为空，无需清空
-            logger.info(f"存储文件夹已存在且为空: {directory}")
-            return
-        
-        # 文件夹有内容，需要清空
-        logger.info(f"开始清空存储文件夹: {directory} (发现 {len(items)} 个文件/文件夹)")
-        for item in items:
-            item_path = os.path.join(directory, item)
-            if os.path.isfile(item_path) or os.path.islink(item_path):
-                os.unlink(item_path)  # 删除文件或链接
-                logger.debug(f"删除文件: {item}")
-            elif os.path.isdir(item_path):
-                shutil.rmtree(item_path)  # 删除子文件夹
-                logger.debug(f"删除文件夹: {item}")
-        logger.info(f"存储文件夹清空完成: {directory}")
-        
-    except Exception as e:
-        logger.error(f"处理存储文件夹时发生错误: {e}", exc_info=True)
-
-
 def update_ini_config_values(config_file=CONFIG_FILE_PATH, section="strava", updates=None):
     """更新 INI 配置文件中的指定字段"""
     if not updates:
@@ -1959,86 +2137,6 @@ if '--strava-upload-test' in sys.argv:
         logger.error(f'[Strava] 上传测试失败: {e}')
         sys.exit(1)
 
-def download_fit_file(session, activity, headers):
-    """下载单个 FIT 文件"""
-    # 确保存储目录存在（但不清空，因为是批量下载）
-    if not os.path.exists(STORAGE_DIR):
-        os.makedirs(STORAGE_DIR, exist_ok=True)
-
-    download_url = activity["durl"]
-    if not download_url.startswith("http"):
-        download_url = f"http://u.onelap.cn{download_url}"
-
-    filename = None
-    filepath = None
-    try:
-        response = session.get(download_url, headers=headers, timeout=10, stream=True)
-        response.raise_for_status()
-
-        cd_filename = None
-        content_disposition = response.headers.get('Content-Disposition') or response.headers.get('content-disposition') or ''
-        if content_disposition:
-            m = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition, flags=re.IGNORECASE)
-            if m:
-                cd_filename = unquote(m.group(1)).strip()
-            if not cd_filename:
-                m = re.search(r'filename="?([^";]+)"?', content_disposition, flags=re.IGNORECASE)
-                if m:
-                    cd_filename = m.group(1).strip()
-
-        activity_file_key = str(activity.get('fileKey') or '').strip()
-        activity_fit_url = str(activity.get('fitUrl') or '').strip()
-        url_path = urlparse(download_url).path
-        url_basename = os.path.basename(url_path) if url_path else ''
-
-        filename_source = None
-        if activity_file_key and 'MAGENE' in activity_file_key.upper():
-            filename = activity_file_key
-            filename_source = 'activity.fileKey'
-        elif cd_filename and 'MAGENE' in cd_filename.upper():
-            filename = cd_filename
-            filename_source = 'response.headers.content-disposition'
-        elif url_basename and 'MAGENE' in url_basename.upper():
-            filename = url_basename
-            filename_source = 'download_url.basename'
-        elif cd_filename:
-            filename = cd_filename
-            filename_source = 'response.headers.content-disposition'
-        elif activity_file_key:
-            filename = activity_file_key
-            filename_source = 'activity.fileKey'
-        elif activity_fit_url:
-            filename = activity_fit_url
-            filename_source = 'activity.fitUrl'
-        else:
-            filename = 'activity.fit'
-            filename_source = 'fallback'
-
-        if not str(filename).lower().endswith('.fit'):
-            filename = f"{filename}.fit"
-
-        filename = re.sub(r'[<>:"/\\\\|?*]+', '_', str(filename)).strip().strip('.')
-        if not filename.lower().endswith('.fit'):
-            filename = f"{filename}.fit"
-
-        filepath = os.path.join(STORAGE_DIR, filename)
-        if os.path.exists(filepath):
-            logger.warning(f"文件已存在，跳过下载: {filename}")
-            response.close()
-            return
-
-        logger.info(f"开始下载: {filename} (命名来源: {filename_source})")
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        logger.info(f"文件下载完成: {filepath}")
-    except Exception as e:
-        logger.error("下载失败", exc_info=True)
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
-            logger.warning(f"已删除不完整文件: {filepath}")
-
 def upload_files_to_giant(tab, valid_files):
     """上传文件到捷安特骑行平台"""
     logger.info("===== 开始上传文件到捷安特平台 =====")
@@ -2277,15 +2375,19 @@ logger.info(f"[DEBUG] ChromiumPage 已启动，当前URL: {getattr(tab, 'url', '
 # valid_files = [f for f in os.listdir(STORAGE_DIR) if f.endswith('.fit') or f.endswith('.gpx')]
 # upload_success = upload_files_to_giant(tab, valid_files)
 
-# === 步骤1：先登录顽鹿获取cookies ===
+# === 步骤1：先登录顽鹿获取认证上下文 ===
 logger.info("===== 步骤1：登录顽鹿平台 =====")
 session = create_retry_session()
+onelap_auth_context = None
 try:
     logger.info("[DEBUG] 开始调用 login_onelap_browser()")
-    # 使用浏览器方式登录顽鹿账号
-    onelap_cookies = login_onelap_browser(tab, ONELAP_ACCOUNT, ONELAP_PASSWORD)
-    logger.info(f"[DEBUG] login_onelap_browser() 返回，cookies数量: {len(onelap_cookies) if onelap_cookies else 0}")
-
+    onelap_auth_context = login_onelap_browser(tab, ONELAP_ACCOUNT, ONELAP_PASSWORD)
+    session = build_onelap_api_session(
+        onelap_auth_context.get('token', ''),
+        onelap_auth_context.get('cookies', {}),
+        session=session,
+    )
+    logger.info(f"[DEBUG] login_onelap_browser() 返回，cookies数量: {len((onelap_auth_context or {}).get('cookies') or {})}")
     logger.info("顽鹿登录完成，准备获取活动数据...")
 except Exception as e:
     logger.critical(f"顽鹿登录失败: {e}")
@@ -2297,14 +2399,14 @@ def get_latest_activity_xoss(tab):
     logger.info("===== 步骤2：登录行者平台获取最新活动 =====")
     try:
         tab.get('https://www.imxingzhe.com/login')
-        
+
         # 登录流程... (简化，假设已登录或执行登录)
         # 这里为了复用原有逻辑，我们保留原来的登录代码块，只是将其封装或调整调用顺序
         # 实际代码中，登录逻辑比较复杂，包含验证码等，这里我们尽量利用已有的登录状态
-        
+
         # ... (此处省略登录细节，直接跳转到列表页) ...
         # 注意：下面的代码是提取自原主流程
-        
+
         # 检查是否需要登录
         if 'login' in tab.url:
             # 执行登录...
@@ -2313,35 +2415,35 @@ def get_latest_activity_xoss(tab):
                 checkbox = tab.ele('.van-checkbox', timeout=1)
                 if checkbox: checkbox.click()
             except: pass
-            
+
             # 输入账号密码
             tab.ele('@name=account').clear()
             tab.ele('@name=account').input(XOSS_ACCOUNT)
             tab.ele('@name=password').clear()
             tab.ele('@name=password').input(XOSS_PASSWORD)
-            
+
             # 点击登录
             try:
                 tab.ele('.login_btn_box login_btn van-button van-button--primary van-button--normal van-button--block').click()
             except:
                 try: tab.ele('button[type=submit]').click()
                 except: tab.ele('button:contains("登录")').click()
-            
+
             time.sleep(3)
 
         # 跳转列表页
         tab.get('https://www.imxingzhe.com/workouts/list')
         time.sleep(5)
-        
+
         # 解析表格
         xoss_activities = []
         # ... (保留原有的解析逻辑) ...
         # 为了避免代码重复，这里我们简化处理，实际应复用原有代码
         # 由于原代码直接写在主流程中，我们需要将其提取出来，或者在主流程中根据条件执行
-        
+
         # 临时方案：直接在主流程中控制，不完全封装成函数，而是通过标志位控制
-        return True 
-        
+        return True
+
     except Exception as e:
         logger.error(f"行者操作失败: {e}")
         return False
@@ -2455,97 +2557,63 @@ if not latest_sync_activity and STRAVA_ENABLE_SYNC and STRAVA_CLIENT_ID and STRA
 
 if not latest_sync_activity:
     if ONELAP_FULL_SYNC:
-        logger.warning("⚠️ 未能从任何平台获取最新活动记录，但已显式启用 onelap_full_sync=true，将执行全量同步！")
+        logger.warning("[WARN]未能从任何平台获取最新活动记录，但已显式启用 onelap_full_sync=true，将执行全量同步！")
     elif igpsport_empty_confirmed:
-        logger.warning("⚠️ iGPSport 当前无活动记录，将按首次同步处理，返回全部 OneLap 活动继续上传。")
+        logger.warning("[WARN]iGPSport 当前无活动记录，将按首次同步处理，返回全部 OneLap 活动继续上传。")
     else:
-        logger.critical("❌ 未能从任何平台获取最新活动记录，且未显式启用 onelap_full_sync=true；为避免误触发全量同步，程序终止。")
+        logger.critical("[ERROR]未能从任何平台获取最新活动记录，且未显式启用 onelap_full_sync=true；为避免误触发全量同步，程序终止。")
         tab.close()
         session.close()
         sys.exit(2)
 else:
-    logger.info(f"✅ 同步基准确定: {sync_benchmark_platform}, 最新时间: {latest_sync_activity['activity_date']}")
+    logger.info(f"[OK]同步基准确定: {sync_benchmark_platform}, 最新时间: {latest_sync_activity['activity_date']}")
 
 if ONELAP_FULL_SYNC:
-    logger.info("✅ 已显式启用 OneLap 全量下载开关，将忽略同步基准，执行全量同步")
+    logger.info("[OK]已显式启用 OneLap 全量下载开关，将忽略同步基准，执行全量同步")
     latest_sync_activity = None
 
 
 # === 步骤3：开始执行 FIT 文件下载任务 ===
 logger.info("===== 步骤3：开始执行 FIT 文件下载任务 =====")
+downloaded_files = []
 try:
     logger.info(f"[DEBUG] 进入步骤3，latest_sync_activity={'有' if latest_sync_activity else '无'}，benchmark平台={sync_benchmark_platform}")
-    # 使用之前获取的顽鹿cookies获取活动数据
-    activities = fetch_activities(session, onelap_cookies, latest_sync_activity)
+    activities = fetch_activities(session, onelap_auth_context, latest_sync_activity)
 
     logger.info(f"[DEBUG] fetch_activities() 返回 {len(activities)} 个活动")
     logger.info(f"总共需要处理 {len(activities)} 个活动")
-    #分别是什么需要打印出来
+
     latest_onelap_activity_time = None
+    onelap_download_state = load_onelap_download_state()
+    ensure_storage_dir(STORAGE_DIR)
+
     for activity in activities:
-        # 将Unix时间戳转换为datetime对象进行格式化
         try:
-            created_at = activity['created_at']
-            if isinstance(created_at, int):
-                # 秒级Unix时间戳
-                activity_time = datetime.fromtimestamp(created_at)
-            elif isinstance(created_at, str):
-                # ISO格式字符串
-                activity_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                activity_time = activity_time.replace(tzinfo=None)
-            else:
-                activity_time = None
-                
+            activity_time = parse_onelap_activity_time(activity)
             time_str = activity_time.strftime('%Y-%m-%d %H:%M:%S') if activity_time else "未知时间"
-            logger.info(f"时间: {time_str}, 距离: {activity['totalDistance']/1000}km, 爬升: {activity['elevation']}m")
+            distance_km = round(float(activity.get('totalDistance') or 0) / 1000, 2)
+            elevation = activity.get('elevation', 0)
+            logger.info(f"时间: {time_str}, 距离: {distance_km}km, 爬升: {elevation}m")
             if activity_time and (latest_onelap_activity_time is None or activity_time > latest_onelap_activity_time):
                 latest_onelap_activity_time = activity_time
         except Exception as e:
             logger.warning(f"时间格式化失败: {e}, created_at={activity.get('created_at')}")
-            logger.info(f"时间: {activity.get('created_at', '未知')}, 距离: {activity['totalDistance']/1000}km, 爬升: {activity['elevation']}m")
 
-    
-    # 在开始批量下载前，确保存储目录存在且为空
-    ensure_storage_dir_clean(STORAGE_DIR)
-    
-    # 准备下载时使用的headers
-    cookie_string = "; ".join([f"{k}={v}" for k, v in onelap_cookies.items()])
-    download_headers = {
-        'Cookie': cookie_string,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
     for idx, activity in enumerate(activities, 1):
         logger.debug(f"正在处理第 {idx}/{len(activities)} 个活动")
-        download_fit_file(
-            session,
-            activity,
-            download_headers
-        )
+        file_path = download_fit_file(session, activity, onelap_download_state, storage_dir=STORAGE_DIR)
+        if file_path and file_path not in downloaded_files:
+            downloaded_files.append(file_path)
 
-    logger.info("===== FIT 文件下载完成 =====")
+    logger.info(f"===== FIT 文件下载完成，本次可用于上传的文件数: {len(downloaded_files)} =====")
 except Exception as e:
     logger.critical("主流程发生致命错误", exc_info=True)
     tab.close()
     session.close()
     sys.exit(1)
 
-# 从文件夹中递归查找符合条件的文件
-def get_valid_files(folder_path):
-    """从指定文件夹中递归查找符合条件的文件"""
-    valid_files = []
-    for root, _, files in os.walk(folder_path):
-        for file in files:
-            file_path = os.path.join(root, file)
-            file_extension = os.path.splitext(file)[1].lower()
-            file_size = os.path.getsize(file_path)
-
-            if file_extension in SUPPORTED_FORMATS and file_size <= MAX_FILE_SIZE:
-                valid_files.append(file_path)
-    return valid_files
-
-# 获取符合条件的文件列表
-valid_files = get_valid_files(STORAGE_DIR)
+# 获取本次需要上传的文件列表
+valid_files = list(downloaded_files)
 has_forward_sync_files = bool(valid_files)
 if not has_forward_sync_files:
     logger.warning("没有找到符合条件的文件，跳过 OneLap 正向上传步骤。")
@@ -2739,9 +2807,9 @@ try:
             if 'latest_onelap_activity_time' in globals() and latest_onelap_activity_time:
                 logger.info(f"本次同步最新 OneLap 时间: {latest_onelap_activity_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 if igp_time.date() >= latest_onelap_activity_time.date():
-                    logger.info("✅ iGPSport 日期验证通过（最新日期不早于本次同步日期）")
+                    logger.info("[OK]iGPSport 日期验证通过（最新日期不早于本次同步日期）")
                 else:
-                    logger.warning("⚠️ iGPSport 日期验证未通过（可能仍在处理导入队列，稍后刷新再看）")
+                    logger.warning("[WARN]iGPSport 日期验证未通过（可能仍在处理导入队列，稍后刷新再看）")
         else:
             logger.warning("未能获取 iGPSport 最新记录用于验证，请手动查看运动记录列表")
     else:
@@ -2773,7 +2841,9 @@ try:
             },
             'onelap': {
                 'username': ONELAP_ACCOUNT,
-                'password': ONELAP_PASSWORD
+                'password': ONELAP_PASSWORD,
+                'tab': tab,
+                'owns_tab': False
             }
         }
         
@@ -2791,9 +2861,9 @@ try:
             success = sync.run(dry_run=dry_run)
             
             if success:
-                logger.info("✅ iGPSport → OneLap 增量同步完成！")
+                logger.info("[OK]iGPSport → OneLap 增量同步完成！")
             else:
-                logger.warning("⚠️ iGPSport → OneLap 同步遇到问题")
+                logger.warning("[WARN]iGPSport → OneLap 同步遇到问题")
                 
         finally:
             # 确保清理资源
