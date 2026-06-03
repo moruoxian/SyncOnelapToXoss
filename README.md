@@ -8,6 +8,15 @@
 - ✅ iGPSport
 - ✅ Strava
 
+当前版本已支持：
+- OneLap 新版签名 API：使用 token + 签名分页获取活动，并通过 FIT 下载接口拉取运动文件。
+- 正向增量同步：按下游平台最新记录作为同步基准，触达基准后停止翻页，避免重复处理历史数据。
+- OneLap 下载状态记录：已完成下载会记录到 `onelap_download_state.json`，重复运行时可跳过已下载文件。
+- `.part` 临时文件保护：下载中断时降低留下坏文件的概率。
+- iGPSport → OneLap 反向增量同步：支持按时间戳筛选增量记录，并通过 OneLap 上传接口补录。
+- Strava OAuth 同步：支持首次授权、token 自动刷新、上传测试、重复上传保护和错误分类日志。
+- 打包发布：GitHub Actions 支持 Windows / Linux 构建，推送 `v*` 标签时可自动创建 GitHub Release。
+
 ## 🎉 新增功能：iGPSport → OneLap 反向增量同步
 
 ### 功能说明
@@ -30,7 +39,7 @@
 ```ini
 [igpsport_to_onelap]
 # 是否启用反向同步
-eable = false    # true=启用, false=禁用(默认)
+enable = false   # true=启用, false=禁用(默认)
 
 # 同步模式
 mode = auto      # auto=增量(推荐), full=全量
@@ -295,12 +304,63 @@ pip install -r requirements.txt
 工作流文件位置：
 
 ```text
-.github/workflows/windows-build.yml
+.github/workflows/build-release.yml
 ```
 
-> 当前版本先实现“自动打包并上传 artifact”，后续可继续扩展为自动上传到 GitHub Release。
+> 当前版本支持 Windows / Linux 构建，并可在推送 `v*` 标签时自动创建 GitHub Release。
 
 ## 📝 版本历史
+
+完整发布说明见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。README 仅保留主要功能和关键修复摘要。
+
+### v1.2.12 (2026-04-25)
+- ✅ 主同步链路切换到 OneLap 新版签名 API，使用 token + 签名分页获取活动。
+- ✅ 正向同步按下游平台最新记录做增量比对，触达同步基准后停止翻页。
+- ✅ 新增 OneLap 下载状态记录与 `.part` 临时文件落盘，支持跳过已完成下载。
+- ✅ 修复 OneLap FIT 下载参数兼容性问题，支持完整 `fitUrl`、解码 URL、路径和文件名候选回退。
+- ✅ iGPSport → OneLap 反向上传改为调用 OneLap 上传接口，修复旧页面自动化上传未入库的问题。
+- ✅ 反向上传按活动时间数量增量校验，减少误判。
+- ✅ 主脚本和增量脚本统一从程序目录读取 `settings.ini`。
+- ✅ 修复 Windows 下反向同步 FIT 文件名和控制台输出兼容性问题。
+
+### v1.2.11 (2026-04-12)
+- ✅ 修复 iGPSport 为空时的同步处理逻辑。
+- ✅ 优化 iGPSport 分批上传后的页面刷新与后续批次处理。
+
+### v1.2.10 (2026-04-12)
+- ✅ PyInstaller 单文件打包后，`settings.ini` 和 Strava 状态文件改为从 exe 所在目录读取。
+- ✅ 修复 `--strava-auth` 等命令在打包版本中找不到配置文件的问题。
+
+### v1.2.9 (2026-04-12)
+- ✅ 当 OneLap 正向没有新文件可上传时，不再提前终止整体流程。
+- ✅ 保证 iGPSport → OneLap 反向增量同步仍可继续执行。
+
+### v1.2.8 (2026-04-01)
+- ✅ 修复 Strava 授权回调处理中的 `NameError`。
+
+### v1.2.7 (2026-04-01)
+- ✅ 完善 Strava 发布说明和用户文档。
+- ✅ GitHub Release 使用 `RELEASE_NOTES.md` 中的自定义发布说明。
+- ✅ 完善自动发布流程。
+
+### v1.2.6 (2026-04-01)
+- ✅ 新增 Strava 同步能力，支持 OAuth 2.0 授权。
+- ✅ 支持 Strava token 自动刷新、重复上传保护、测试命令和单文件上传测试。
+- ✅ Strava 可作为同步基准的兜底平台。
+- ✅ GitHub Actions 支持 Windows / Linux 自动构建，并在 tag 发布时创建 Release。
+- ✅ 优化 iGPSport 文件输入框与确认按钮定位，提升导入稳定性。
+
+### v1.2.5 (2026-03-28)
+- ✅ 增强增量同步保护：未显式配置 `onelap_full_sync=true` 时，避免误触发全量同步。
+- ✅ 优化行者 (XOSS) 最新活动时间解析，修复基准判断失败问题。
+- ✅ 修复 iGPSport 登录成功判断、页面访问、导入按钮定位和上传确认逻辑。
+- ✅ 继续支持 `.fit`、`.gpx`、`.tcx` 文件格式。
+- ✅ 增强错误处理和请求重试机制。
+
+### v1.2.4 (2026-02-28)
+- ✅ 优化使用说明和配置文档。
+- ✅ 明确常用同步场景、账号选填规则和开关配置。
+- ✅ 修复增量同步浏览器端口与 XOSS 跳过逻辑。
 
 ### v1.2.3 (2026-02-08)
 - ✅ 新增 iGPSport → OneLap 反向增量同步功能
@@ -315,6 +375,9 @@ pip install -r requirements.txt
 
 ### v1.2.0
 - ✅ 新增 iGPSport 平台支持
+
+### v1.1.0
+- ✅ 新增同步到捷安特骑行平台功能
 
 ### v1.0.0
 - ✅ 初始版本，支持 OneLap → 行者/捷安特
