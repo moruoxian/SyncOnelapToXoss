@@ -47,6 +47,10 @@ ONELAP_DETAIL_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/{{recor
 ONELAP_DOWNLOAD_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/fit_content/{{fit_key}}'
 ONELAP_SIGN_KEY = 'fe9f8382418fcdeb136461cac6acae7b'
 ONELAP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+GARMIN_IMPORT_URL = 'https://connect.garmin.cn/app/import-data'
+GARMIN_ACTIVITIES_URL = 'https://connect.garmin.cn/modern/activities'
+GARMIN_USAGE_INDICATORS_API = '/gc-api/web-gateway/snapshot/usageIndicators'
+GARMIN_LOGIN_WAIT_SECONDS = 180
 
 # ===== 新增：导入增量同步模块 =====
 if SCRIPT_DIR not in sys.path:
@@ -84,6 +88,10 @@ def load_config_from_ini(config_file=CONFIG_FILE_PATH):
         cfg['IGPSPORT_ACCOUNT'] = config.get('igpsport', 'username', fallback='')
         cfg['IGPSPORT_PASSWORD'] = config.get('igpsport', 'password', fallback='')
         cfg['IGPSPORT_ENABLE_SYNC'] = config.getboolean('igpsport', 'enable_sync', fallback=False)
+        cfg['GARMIN_ACCOUNT'] = config.get('garmin', 'username', fallback='')
+        cfg['GARMIN_PASSWORD'] = config.get('garmin', 'password', fallback='')
+        cfg['GARMIN_ENABLE_SYNC'] = config.getboolean('garmin', 'enable_sync', fallback=False)
+        cfg['GARMIN_MAX_UPLOAD_FILES'] = config.getint('garmin', 'max_upload_files', fallback=0)
         cfg['STRAVA_ENABLE_SYNC'] = config.getboolean('strava', 'enable_sync', fallback=False)
         cfg['STRAVA_CLIENT_ID'] = config.get('strava', 'client_id', fallback='').strip()
         cfg['STRAVA_CLIENT_SECRET'] = config.get('strava', 'client_secret', fallback='').strip()
@@ -132,6 +140,10 @@ if ini_config:
     IGPSPORT_ACCOUNT = ini_config['IGPSPORT_ACCOUNT']
     IGPSPORT_PASSWORD = ini_config['IGPSPORT_PASSWORD']
     IGPSPORT_ENABLE_SYNC = ini_config['IGPSPORT_ENABLE_SYNC']
+    GARMIN_ACCOUNT = ini_config['GARMIN_ACCOUNT']
+    GARMIN_PASSWORD = ini_config['GARMIN_PASSWORD']
+    GARMIN_ENABLE_SYNC = ini_config['GARMIN_ENABLE_SYNC']
+    GARMIN_MAX_UPLOAD_FILES = ini_config.get('GARMIN_MAX_UPLOAD_FILES', 0)
     STRAVA_ENABLE_SYNC = ini_config.get('STRAVA_ENABLE_SYNC', False)
     STRAVA_CLIENT_ID = ini_config.get('STRAVA_CLIENT_ID', '')
     STRAVA_CLIENT_SECRET = ini_config.get('STRAVA_CLIENT_SECRET', '')
@@ -170,6 +182,11 @@ if ini_config:
         print("[WARN]请在 settings.ini 中配置正确的iGPSport账号")
     if IGPSPORT_PASSWORD in ['xxxxxx', '']:
         print("[WARN]请在 settings.ini 中配置正确的iGPSport密码")
+    if GARMIN_ENABLE_SYNC:
+        if GARMIN_ACCOUNT in ['139xxxxxx', '']:
+            print("[WARN]请在 settings.ini 中配置正确的Garmin账号")
+        if GARMIN_PASSWORD in ['xxxxxx', '']:
+            print("[WARN]请在 settings.ini 中配置正确的Garmin密码")
 else:
     # 使用默认配置
     print("[INFO]使用默认配置")
@@ -186,6 +203,10 @@ else:
     IGPSPORT_ACCOUNT = ''
     IGPSPORT_PASSWORD = ''
     IGPSPORT_ENABLE_SYNC = False
+    GARMIN_ACCOUNT = ''
+    GARMIN_PASSWORD = ''
+    GARMIN_ENABLE_SYNC = False
+    GARMIN_MAX_UPLOAD_FILES = 0
     STRAVA_ENABLE_SYNC = False
     STRAVA_CLIENT_ID = ''
     STRAVA_CLIENT_SECRET = ''
@@ -640,6 +661,7 @@ def parse_onelap_activity_time(activity):
     candidates = []
     if isinstance(activity, dict):
         candidates.extend([
+            activity.get('activity_time'),
             activity.get('start_riding_time'),
             activity.get('startTime'),
             activity.get('created_at'),
@@ -683,6 +705,38 @@ def parse_onelap_activity_time(activity):
             return parsed
     return None
 
+def parse_activity_time_from_filename(filename):
+    """从 OneLap/FIT 文件名中提取活动开始时间，用于旧下载状态缺少时间时排序。"""
+    name = os.path.basename(str(filename or ''))
+    for match in re.findall(r'(?<!\d)(1[6-9]\d{8,12})(?!\d)', name):
+        try:
+            raw = int(match)
+            timestamp = raw / 1000 if raw > 10**11 else raw
+            dt = datetime.fromtimestamp(timestamp)
+            if dt.year >= 2000:
+                return dt
+        except Exception:
+            continue
+
+    date_patterns = [
+        r'(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})',
+        r'(20\d{2})[-_](\d{2})[-_](\d{2})',
+    ]
+    for pattern in date_patterns:
+        match = re.search(pattern, name)
+        if not match:
+            continue
+        try:
+            parts = [int(part) for part in match.groups()]
+            if len(parts) == 3:
+                parts.extend([0, 0, 0])
+            dt = datetime(*parts)
+            if dt.year >= 2000:
+                return dt
+        except Exception:
+            continue
+    return None
+
 
 def load_onelap_download_state(state_file=ONELAP_DOWNLOAD_STATE_FILE):
     try:
@@ -707,10 +761,12 @@ def save_onelap_download_state(state, state_file=ONELAP_DOWNLOAD_STATE_FILE):
 def update_onelap_download_state(state, record_id, activity, filename, fit_url, downloaded=True):
     if not record_id:
         return
+    activity_time = parse_onelap_activity_time(activity)
     state[record_id] = {
         'downloaded': downloaded,
         'filename': filename or '',
         'fitUrl': fit_url or '',
+        'activity_time': activity_time.strftime('%Y-%m-%d %H:%M:%S') if activity_time else '',
         'created_at': activity.get('created_at'),
         'downloaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S') if downloaded else '',
         'name': str(activity.get('name') or ''),
@@ -1124,6 +1180,579 @@ def get_latest_activity_giant(tab):
     except Exception as e:
         logger.error(f"获取Giant最新活动失败: {e}")
         return None
+
+def is_garmin_logged_in(tab):
+    """判断当前 Garmin Connect 页面是否已经进入登录态"""
+    current_url = (tab.url or '').lower()
+    if 'connect.garmin.cn' not in current_url:
+        return False
+    if any(marker in current_url for marker in ['signin', 'login', 'sso']):
+        return False
+    try:
+        if tab.ele('@type=password', timeout=1):
+            return False
+    except Exception:
+        pass
+    return ('/app/import-data' in current_url) or ('/modern/' in current_url)
+
+def wait_garmin_login_success(tab, timeout=GARMIN_LOGIN_WAIT_SECONDS):
+    """等待 Garmin 登录成功；验证码/二次验证可由用户在浏览器内手动完成"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if is_garmin_logged_in(tab):
+            return True
+        time.sleep(1)
+    return False
+
+def collect_garmin_login_hints(tab):
+    """采集 Garmin 登录页脱敏诊断信息"""
+    hints = []
+    for selector in ['.error', '.alert', '.help-block', '.validation-message', '[role=alert]']:
+        try:
+            for ele in tab.eles(selector):
+                text = (ele.text or '').strip()
+                if not text or len(text) > 120:
+                    continue
+                lowered = text.lower()
+                if any(keyword in lowered for keyword in ['error', 'invalid', '验证码', '验证', '错误', '密码', 'code', 'verify']):
+                    if text not in hints:
+                        hints.append(text)
+                if len(hints) >= 5:
+                    return hints
+        except Exception:
+            continue
+    try:
+        body_text = (tab.ele('tag:body', timeout=1).text or '').strip()
+        body_text = re.sub(r'\s+', ' ', body_text)
+        for keyword in ['验证码', '验证', '错误', '密码', 'invalid', 'verify', 'code']:
+            idx = body_text.lower().find(keyword.lower())
+            if idx >= 0:
+                hints.append(body_text[max(0, idx - 40):idx + 80])
+                break
+    except Exception:
+        pass
+    return hints
+
+def parse_garmin_usage_indicators(data):
+    """从 Garmin usageIndicators 响应中解析最新活动时间"""
+    indicators = (
+        (data or {})
+        .get('performanceBasedIndicators', {})
+        .get('activityIndicators', {})
+    )
+    if not isinstance(indicators, dict):
+        return None
+
+    cycling = indicators.get('cycling') or {}
+    cycling_date = cycling.get('lastActivityDate') if isinstance(cycling, dict) else None
+    if cycling_date:
+        latest_time = datetime.fromisoformat(str(cycling_date).replace('Z', '+00:00')).replace(tzinfo=None)
+        return {
+            'platform': 'garmin',
+            'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'time_obj': latest_time,
+            'activity_id': cycling.get('lastActivityId'),
+            'source': 'cycling',
+        }
+
+    fallback_times = []
+    for activity_type, item in indicators.items():
+        if not isinstance(item, dict) or not item.get('lastActivityDate'):
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(item['lastActivityDate']).replace('Z', '+00:00')).replace(tzinfo=None)
+            fallback_times.append((parsed, item.get('lastActivityId'), activity_type))
+        except Exception:
+            continue
+    if fallback_times:
+        latest_time, activity_id, activity_type = max(fallback_times, key=lambda x: x[0])
+        return {
+            'platform': 'garmin',
+            'activity_date': latest_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'time_obj': latest_time,
+            'activity_id': activity_id,
+            'source': activity_type,
+        }
+    return None
+
+def input_garmin_field(tab, element, value, field_name):
+    """Garmin SSO 需要真实键盘事件才能启用登录按钮。"""
+    try:
+        element.click()
+        element.clear()
+        time.sleep(0.2)
+        tab.actions.type(value)
+        logger.info(f"已通过键盘事件输入 Garmin {field_name}")
+        return True
+    except Exception as e:
+        logger.warning(f"Garmin {field_name}键盘输入失败，回退普通输入: {e}")
+        try:
+            element.click()
+            element.clear()
+            element.input(value)
+            logger.info(f"已通过普通输入 Garmin {field_name}")
+            return True
+        except Exception as inner_e:
+            logger.error(f"输入 Garmin {field_name}失败: {inner_e}")
+            return False
+
+def is_garmin_login_button_enabled(tab):
+    """检查 Garmin SSO 登录按钮是否可点击。"""
+    try:
+        button_state = tab.run_js("""
+            const buttons = [...document.querySelectorAll('button,input[type=submit]')];
+            const btn = buttons.find(b => /sign in|log in/i.test((b.innerText || b.value || '')))
+                || buttons.find(b => (b.type || '').toLowerCase() === 'submit');
+            if (!btn) return {found: false, enabled: false, text: ''};
+            const text = (btn.innerText || btn.value || '').trim();
+            return {found: true, enabled: !btn.disabled, text};
+        """, timeout=5)
+        return bool(isinstance(button_state, dict) and button_state.get('found') and button_state.get('enabled'))
+    except Exception:
+        return False
+
+def wait_garmin_login_button_enabled(tab, timeout=10):
+    """等待 Garmin SSO 前端校验解锁登录按钮。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        if is_garmin_login_button_enabled(tab):
+            return True
+        time.sleep(0.5)
+    return False
+
+def login_garmin_browser(tab, account, password):
+    """使用现有浏览器标签页登录 Garmin Connect 中国区"""
+    logger.info("使用浏览器登录 Garmin Connect 中国区")
+
+    try:
+        current_url = tab.url or ''
+        if is_garmin_logged_in(tab):
+            logger.info(f"检测到 Garmin 已登录态，直接复用当前会话: {current_url}")
+            return {cookie['name']: cookie['value'] for cookie in tab.cookies()}
+
+        logger.info("正在访问 Garmin Connect 导入页面...")
+        tab.get(GARMIN_IMPORT_URL)
+        time.sleep(4)
+
+        if is_garmin_logged_in(tab):
+            logger.info("Garmin 已处于登录态")
+            return {cookie['name']: cookie['value'] for cookie in tab.cookies()}
+
+        logger.info(f"Garmin 当前URL: {tab.url}")
+        logger.info(f"Garmin 当前标题: {tab.title}")
+
+        username_input = None
+        username_selectors = [
+            '#username',
+            '#email',
+            '@name=username',
+            '@name=email',
+            '@name=login',
+            '@type=email',
+            '@type=text',
+        ]
+        for selector in username_selectors:
+            try:
+                username_input = tab.ele(selector, timeout=2)
+                if username_input:
+                    logger.info(f"找到 Garmin 用户名输入框: {selector}")
+                    break
+            except Exception:
+                continue
+        if username_input:
+            input_garmin_field(tab, username_input, account, "账号")
+        else:
+            logger.warning("未找到 Garmin 用户名输入框，可能需要人工完成登录")
+
+        password_input = None
+        password_selectors = [
+            '#password',
+            '@name=password',
+            '@type=password',
+        ]
+        for selector in password_selectors:
+            try:
+                password_input = tab.ele(selector, timeout=2)
+                if password_input:
+                    logger.info(f"找到 Garmin 密码输入框: {selector}")
+                    break
+            except Exception:
+                continue
+        if password_input:
+            input_garmin_field(tab, password_input, password, "密码")
+        else:
+            logger.warning("未找到 Garmin 密码输入框，可能需要人工完成登录")
+
+        if username_input and password_input:
+            if not wait_garmin_login_button_enabled(tab):
+                logger.warning("Garmin 登录按钮仍未启用，请检查账号格式或在浏览器中手动提交")
+            login_button = None
+            login_selectors = [
+                '@type=submit',
+                'text:登录',
+                'text:Log In',
+                'text:Sign In',
+                'text:登入',
+            ]
+            for selector in login_selectors:
+                try:
+                    login_button = tab.ele(selector, timeout=2)
+                    if login_button:
+                        logger.info(f"找到 Garmin 登录按钮: {selector}")
+                        break
+                except Exception:
+                    continue
+            if login_button:
+                try:
+                    login_button.click(by_js=True)
+                except Exception:
+                    login_button.click()
+                logger.info("已点击 Garmin 登录按钮")
+                time.sleep(3)
+                if not is_garmin_logged_in(tab) and any(marker in (tab.url or '').lower() for marker in ['signin', 'sign-in', 'login', 'sso']):
+                    logger.info("Garmin 仍停留在登录页，尝试再次提交登录表单")
+                    try:
+                        login_button.click()
+                    except Exception:
+                        try:
+                            login_button.click(by_js=True)
+                        except Exception:
+                            pass
+            else:
+                logger.warning("未找到 Garmin 登录按钮，请在浏览器中手动提交登录")
+
+        logger.info(f"等待 Garmin 登录完成，若出现验证码或二次验证，请在 {GARMIN_LOGIN_WAIT_SECONDS} 秒内手动完成")
+        if not wait_garmin_login_success(tab):
+            logger.error(f"Garmin 登录等待超时，当前URL: {tab.url}")
+            logger.error(f"Garmin 登录等待超时，当前标题: {tab.title}")
+            login_hints = collect_garmin_login_hints(tab)
+            if login_hints:
+                logger.error(f"Garmin 登录页面提示: {login_hints}")
+            raise Exception("Garmin 登录超时，未检测到可用登录态")
+
+        logger.info("Garmin 登录成功")
+        return {cookie['name']: cookie['value'] for cookie in tab.cookies()}
+
+    except Exception as e:
+        logger.error(f"Garmin 浏览器登录失败: {e}")
+        raise
+
+def get_latest_activity_garmin(tab):
+    """从 Garmin Connect 获取最新活动时间"""
+    logger.info("正在从 Garmin Connect 获取最新活动记录...")
+    try:
+        if not is_garmin_logged_in(tab):
+            tab.get(GARMIN_ACTIVITIES_URL)
+            time.sleep(4)
+            if not is_garmin_logged_in(tab):
+                logger.warning("Garmin 未处于登录态，无法获取最新活动")
+                return None
+        elif '/modern/activities' not in (tab.url or ''):
+            tab.get(GARMIN_ACTIVITIES_URL)
+            time.sleep(4)
+
+        try:
+            tab.listen.start('usageIndicators')
+            tab.get(GARMIN_IMPORT_URL)
+            logger.info("等待 Garmin 页面原生 usageIndicators 响应...")
+            packets = list(tab.listen.steps(timeout=15))
+            for pkt in packets:
+                if 'usageIndicators' not in (pkt.url or ''):
+                    continue
+                body = getattr(pkt.response, 'body', None)
+                if isinstance(body, dict):
+                    parsed = parse_garmin_usage_indicators(body)
+                    if parsed:
+                        if parsed.get('source') == 'cycling':
+                            logger.info(f"Garmin 最新骑行活动时间: {parsed['activity_date']}")
+                        else:
+                            logger.info(f"Garmin 未找到骑行活动，使用最新 {parsed.get('source')} 活动时间: {parsed['activity_date']}")
+                        return parsed
+            logger.warning("未从 Garmin 页面原生 usageIndicators 响应中解析出活动时间")
+        except Exception as e:
+            logger.warning(f"监听 Garmin usageIndicators 响应失败，尝试 fetch 回退: {e}")
+
+        try:
+            usage_data = tab.run_js(f"""
+                return (async () => {{
+                    const response = await fetch({GARMIN_USAGE_INDICATORS_API!r}, {{
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'application/json' }}
+                    }});
+                    if (!response.ok) {{
+                        return {{ ok: false, status: response.status, text: await response.text() }};
+                    }}
+                    return {{ ok: true, data: await response.json() }};
+                }})();
+            """, timeout=30)
+
+            if isinstance(usage_data, dict) and usage_data.get('ok'):
+                parsed = parse_garmin_usage_indicators(usage_data.get('data', {}))
+                if parsed:
+                    if parsed.get('source') == 'cycling':
+                        logger.info(f"Garmin 最新骑行活动时间: {parsed['activity_date']}")
+                    else:
+                        logger.info(f"Garmin 未找到骑行活动，使用最新 {parsed.get('source')} 活动时间: {parsed['activity_date']}")
+                    return parsed
+            else:
+                logger.warning(f"Garmin usageIndicators 接口不可用: {usage_data}")
+        except Exception as e:
+            logger.warning(f"Garmin usageIndicators 接口解析失败，回退页面文本解析: {e}")
+
+        page_text = ''
+        try:
+            page_text = BeautifulSoup(tab.html, 'html.parser').get_text(' ', strip=True)
+        except Exception:
+            page_text = ''
+
+        parsed_times = extract_datetimes_from_text(page_text)
+        if not parsed_times:
+            logger.warning("无法从 Garmin 活动页面解析出时间")
+            return None
+
+        latest_time = max(parsed_times)
+        activity_date = latest_time.strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"Garmin 最新活动时间: {activity_date}")
+        return {
+            'platform': 'garmin',
+            'activity_date': activity_date,
+            'time_obj': latest_time,
+        }
+
+    except Exception as e:
+        logger.error(f"获取 Garmin 最新活动失败: {e}")
+        return None
+
+def find_garmin_file_input(tab):
+    """定位 Garmin 导入页中的文件上传输入框"""
+    upload_selectors = [
+        'css:input[type="file"]',
+        '@type=file',
+    ]
+    for selector in upload_selectors:
+        try:
+            file_input = tab.ele(selector, timeout=3)
+            if file_input:
+                try:
+                    file_input.run_js('this.style.display="block"; this.style.visibility="visible"; this.style.opacity="1"; this.style.zIndex="9999";')
+                except Exception:
+                    pass
+                logger.info(f"找到 Garmin 文件输入框: {selector}")
+                return file_input
+        except Exception:
+            continue
+
+    for ele in tab.eles('tag:input'):
+        try:
+            e_type = ele.attr('type') or ''
+            e_name = ele.attr('name') or ''
+            e_accept = ele.attr('accept') or ''
+            if e_type == 'file' or '.fit' in e_accept or '.gpx' in e_accept or '.tcx' in e_accept or e_name == 'file':
+                try:
+                    ele.run_js('this.style.display="block"; this.style.visibility="visible"; this.style.opacity="1"; this.style.zIndex="9999";')
+                except Exception:
+                    pass
+                logger.info(f"从 input 列表中找到 Garmin 文件输入框: type={e_type}, name={e_name}, accept={e_accept}")
+                return ele
+        except Exception:
+            continue
+    return None
+
+def click_garmin_confirm_button(tab):
+    """点击 Garmin 导入确认按钮"""
+    candidate_texts = ['继续', '导入', '导入数据', '开始导入', '上传', '确认', 'Continue', 'Next', 'Import', 'Import Data', 'Upload']
+    candidate_keywords = ['继续', '导入', '上传', 'continue', 'import', 'upload']
+    preview = []
+
+    for preferred_text in ['继续', 'Continue', 'Next']:
+        for selector in ['tag:button', 'tag:a', 'tag:div', 'tag:span']:
+            try:
+                for ele in tab.eles(selector):
+                    text = (ele.text or '').strip()
+                    if text != preferred_text:
+                        continue
+                    tag = str(ele.tag or '').lower()
+                    role = (ele.attr('role') or '').lower()
+                    class_name = (ele.attr('class') or '').lower()
+                    is_clickable = tag in ['button', 'a'] or role == 'button' or 'button' in class_name or 'btn' in class_name
+                    if not is_clickable:
+                        continue
+                    try:
+                        ele.click(by_js=True)
+                    except Exception:
+                        ele.click()
+                    logger.info(f"已点击 Garmin 导入确认按钮: {text}")
+                    return True
+            except Exception:
+                continue
+
+    for selector in ['tag:button', 'tag:a', 'tag:div', 'tag:span']:
+        try:
+            for ele in tab.eles(selector):
+                text = (ele.text or '').strip()
+                if not text:
+                    continue
+                preview.append(f"{selector}:{text[:30]}")
+                normalized_text = text.lower()
+                text_matches = text in candidate_texts or any(keyword in normalized_text for keyword in candidate_keywords)
+                if not text_matches:
+                    continue
+
+                tag = str(ele.tag or '').lower()
+                role = (ele.attr('role') or '').lower()
+                class_name = (ele.attr('class') or '').lower()
+                is_clickable = tag in ['button', 'a'] or role == 'button' or 'button' in class_name or 'btn' in class_name
+                if not is_clickable:
+                    continue
+
+                try:
+                    ele.click(by_js=True)
+                except Exception:
+                    ele.click()
+                logger.info(f"已点击 Garmin 导入确认按钮: {text}")
+                return True
+        except Exception:
+            continue
+    logger.warning(f"未找到 Garmin 导入确认按钮，候选文本: {preview[:20]}")
+    return False
+
+def wait_garmin_import_result(tab, timeout=180):
+    """等待 Garmin 导入处理完成，返回 success/failed/unknown"""
+    success_keywords = ['导入完成', '导入成功', '上传成功', '已导入', '完成', 'successfully imported', 'import complete']
+    failure_keywords = ['导入失败', '上传失败', '无法导入', '错误', '失败', 'failed', 'error', 'unable to import']
+    processing_keywords = ['正在导入', '正在上传', '处理中', '请稍候', 'processing', 'importing', 'uploading']
+    end = time.time() + timeout
+    last_text = ''
+
+    while time.time() < end:
+        try:
+            body = tab.ele('tag:body', timeout=2)
+            text = re.sub(r'\s+', ' ', (body.text or '')).strip()
+            lowered = text.lower()
+            if text and text != last_text:
+                last_text = text
+                logger.debug(f"Garmin 导入页面状态: {text[:300]}")
+
+            if any(keyword in lowered for keyword in failure_keywords):
+                logger.warning("Garmin 页面显示导入失败或错误提示")
+                return 'failed'
+            if any(keyword in lowered for keyword in success_keywords):
+                logger.info("Garmin 页面显示导入完成")
+                return 'success'
+
+            has_processing = any(keyword in lowered for keyword in processing_keywords)
+            has_file_input = bool(tab.ele('css:input[type="file"]', timeout=1))
+            if not has_processing and not has_file_input and 'import-data' not in (tab.url or ''):
+                logger.info("Garmin 导入页面已跳转，视为导入流程完成")
+                return 'success'
+        except Exception:
+            pass
+        time.sleep(3)
+
+    logger.warning("等待 Garmin 导入结果超时，请在 Garmin 页面手动确认是否导入成功")
+    return 'unknown'
+
+def sort_garmin_upload_files_chronologically(valid_files):
+    """Garmin 增量基准会随最新活动推进，必须按旧到新上传，便于异常后续传。"""
+    files = list(valid_files)
+    if len(files) <= 1:
+        return files
+
+    state = load_onelap_download_state()
+    filename_times = {}
+    for item in state.values():
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get('filename') or '').strip()
+        if not filename:
+            continue
+        activity_time = parse_onelap_activity_time(item) or parse_activity_time_from_filename(filename)
+        if activity_time:
+            filename_times[filename] = activity_time
+
+    indexed_files = []
+    missing_count = 0
+    for idx, file_path in enumerate(files):
+        filename = os.path.basename(file_path)
+        activity_time = filename_times.get(filename) or parse_activity_time_from_filename(filename)
+        if not activity_time:
+            missing_count += 1
+        indexed_files.append((idx, file_path, activity_time))
+
+    if missing_count == len(indexed_files):
+        logger.warning("未能从 OneLap 下载状态解析 Garmin 上传文件时间，按当前列表反向上传")
+        return list(reversed(files))
+
+    sorted_items = sorted(
+        indexed_files,
+        key=lambda item: (
+            item[2] is None,
+            item[2] or datetime.max,
+            item[0],
+        )
+    )
+    if missing_count:
+        logger.warning(f"Garmin 上传排序有 {missing_count} 个文件缺少时间，已放在有时间文件之后")
+    return [item[1] for item in sorted_items]
+
+def upload_files_to_garmin(tab, valid_files):
+    """上传文件到 Garmin Connect 中国区"""
+    logger.info("===== 开始上传文件到 Garmin Connect =====")
+
+    try:
+        if not is_garmin_logged_in(tab):
+            login_garmin_browser(tab, GARMIN_ACCOUNT, GARMIN_PASSWORD)
+
+        upload_files = sort_garmin_upload_files_chronologically(valid_files)
+        garmin_batch_size = GARMIN_MAX_UPLOAD_FILES if GARMIN_MAX_UPLOAD_FILES and GARMIN_MAX_UPLOAD_FILES > 0 else MAX_FILES_PER_BATCH
+        logger.info(f"Garmin 本次待上传文件总数: {len(upload_files)}，每批最多 {garmin_batch_size} 个，按活动时间正序上传")
+
+        for batch in batch_files(upload_files, garmin_batch_size):
+            logger.info(f"正在上传批次文件到 Garmin，共 {len(batch)} 个文件")
+            tab.get(GARMIN_IMPORT_URL)
+            time.sleep(4)
+
+            file_input = find_garmin_file_input(tab)
+            if not file_input:
+                logger.error("无法找到 Garmin 文件上传输入框")
+                return False
+
+            abs_paths = [os.path.abspath(p) for p in batch]
+            for file_path in abs_paths:
+                logger.info(f"准备上传到 Garmin: {os.path.basename(file_path)}")
+
+            try:
+                file_input.input('\n'.join(abs_paths))
+            except Exception as e:
+                logger.warning(f"Garmin 批量选择文件失败，尝试 click.to_upload: {e}")
+                try:
+                    if len(abs_paths) == 1:
+                        file_input.click.to_upload(abs_paths[0])
+                    else:
+                        file_input.click.to_upload('\n'.join(abs_paths))
+                except Exception as inner_e:
+                    logger.error(f"Garmin 文件选择失败: {inner_e}")
+                    return False
+
+            logger.info(f"Garmin 文件选择成功，共 {len(abs_paths)} 个")
+            time.sleep(3)
+
+            if not click_garmin_confirm_button(tab):
+                logger.warning("未能点击 Garmin 导入确认按钮，文件可能已被页面自动接收，请手动检查")
+
+            result = wait_garmin_import_result(tab, timeout=180)
+            if result == 'failed':
+                return False
+            if result == 'unknown':
+                logger.warning("Garmin 导入结果未知，为避免打断处理，停止后续批次")
+                return False
+
+        logger.info("===== Garmin Connect 文件上传流程完成 =====")
+        return True
+
+    except Exception as e:
+        logger.error(f"上传到 Garmin Connect 失败: {e}")
+        return False
 
 def batch_files(file_list, batch_size):
     """将文件列表分批处理"""
@@ -2500,6 +3129,7 @@ latest_sync_activity = None
 sync_benchmark_platform = None
 xoss_login_ok = False
 igpsport_empty_confirmed = False
+garmin_login_ok = False
 
 # 优先级1：行者 (XOSS)
 if XOSS_ENABLE_SYNC and XOSS_ACCOUNT and XOSS_PASSWORD and XOSS_ACCOUNT not in ['139xxxxxx', ''] and XOSS_PASSWORD not in ['xxxxxx', '']:
@@ -2586,6 +3216,25 @@ if not latest_sync_activity and GIANT_ENABLE_SYNC and GIANT_ACCOUNT and GIANT_PA
             logger.info(f"成功获取 Giant 最新记录: {result['activity_date']}")
     except Exception as e:
         logger.error(f"Giant 获取基准失败: {e}")
+
+# 如果还不行，尝试 Garmin
+if not latest_sync_activity and GARMIN_ENABLE_SYNC and GARMIN_ACCOUNT and GARMIN_PASSWORD:
+    logger.info("尝试使用 Garmin 作为同步基准...")
+    try:
+        logger.info("[DEBUG] 开始调用 login_garmin_browser() 获取基准")
+        login_garmin_browser(tab, GARMIN_ACCOUNT, GARMIN_PASSWORD)
+        garmin_login_ok = True
+        logger.info(f"[DEBUG] Garmin 登录返回，当前URL: {tab.url}")
+        result = get_latest_activity_garmin(tab)
+        if result:
+            latest_sync_activity = result
+            sync_benchmark_platform = 'garmin'
+            logger.info(f"成功获取 Garmin 最新记录: {result['activity_date']}")
+        else:
+            logger.warning("未能确认 Garmin 最新记录，继续尝试其他平台")
+    except Exception as e:
+        logger.error(f"Garmin 获取基准失败: {e}")
+        garmin_login_ok = False
 
 # 如果还不行，尝试 Strava
 if not latest_sync_activity and STRAVA_ENABLE_SYNC and STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET and STRAVA_REFRESH_TOKEN:
@@ -2799,8 +3448,33 @@ except Exception as e:
     logger.error(f"iGPSport平台上传过程出错: {e}")
     logger.info("继续执行后续步骤...")
 
-# === 步骤7：上传文件到 Strava 平台 ===
-logger.info("===== 步骤7：上传文件到 Strava 平台 =====")
+# === 步骤7：上传文件到 Garmin Connect 平台 ===
+logger.info("===== 步骤7：上传文件到 Garmin Connect 平台 =====")
+try:
+    if not has_forward_sync_files:
+        logger.info("没有 OneLap 新文件，跳过 Garmin 上传")
+    elif not GARMIN_ENABLE_SYNC:
+        logger.info("Garmin 平台同步已禁用，跳过 Garmin 上传")
+    elif not (GARMIN_ACCOUNT and GARMIN_PASSWORD and GARMIN_ACCOUNT not in ['139xxxxxx', ''] and GARMIN_PASSWORD not in ['xxxxxx', '']):
+        logger.info("未配置 Garmin 账号或密码为默认值，跳过 Garmin 上传")
+    else:
+        logger.info("开始登录 Garmin Connect 平台...")
+        if not garmin_login_ok:
+            login_garmin_browser(tab, GARMIN_ACCOUNT, GARMIN_PASSWORD)
+            garmin_login_ok = True
+        logger.info("Garmin 登录完成，开始上传文件...")
+
+        upload_success = upload_files_to_garmin(tab, valid_files)
+        if upload_success:
+            logger.info("文件已成功上传到 Garmin Connect 平台")
+        else:
+            logger.warning("Garmin Connect 平台上传出现问题，请手动检查")
+except Exception as e:
+    logger.error(f"Garmin Connect 平台上传过程出错: {e}")
+    logger.info("继续执行后续步骤...")
+
+# === 步骤8：上传文件到 Strava 平台 ===
+logger.info("===== 步骤8：上传文件到 Strava 平台 =====")
 try:
     if not has_forward_sync_files:
         logger.info("没有 OneLap 新文件，跳过 Strava 上传")
@@ -2819,8 +3493,8 @@ except Exception as e:
     logger.error(f"Strava 平台上传过程出错: {e}")
     logger.info("继续执行后续步骤...")
 
-# === 步骤8：验证同步结果 ===
-logger.info("===== 步骤8：验证同步结果 =====")
+# === 步骤9：验证同步结果 ===
+logger.info("===== 步骤9：验证同步结果 =====")
 try:
     if not has_forward_sync_files:
         logger.info("没有 OneLap 新文件，跳过正向同步验证步骤")
@@ -2858,16 +3532,33 @@ try:
                     logger.warning("[WARN]iGPSport 日期验证未通过（可能仍在处理导入队列，稍后刷新再看）")
         else:
             logger.warning("未能获取 iGPSport 最新记录用于验证，请手动查看运动记录列表")
+    elif GARMIN_ENABLE_SYNC:
+        logger.info("改为验证 Garmin 最新记录日期...")
+        if not garmin_login_ok:
+            login_garmin_browser(tab, GARMIN_ACCOUNT, GARMIN_PASSWORD)
+            garmin_login_ok = True
+        latest_garmin = get_latest_activity_garmin(tab)
+        if latest_garmin and latest_garmin.get('time_obj'):
+            garmin_time = latest_garmin['time_obj']
+            logger.info(f"Garmin 当前最新日期: {garmin_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            if 'latest_onelap_activity_time' in globals() and latest_onelap_activity_time:
+                logger.info(f"本次同步最新 OneLap 时间: {latest_onelap_activity_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                if garmin_time.date() >= latest_onelap_activity_time.date():
+                    logger.info("[OK]Garmin 日期验证通过（最新日期不早于本次同步日期）")
+                else:
+                    logger.warning("[WARN]Garmin 日期验证未通过（可能仍在处理导入队列，稍后刷新再看）")
+        else:
+            logger.warning("未能获取 Garmin 最新记录用于验证，请手动查看活动列表")
     else:
-        logger.info("未配置行者且 iGPSport 上传未启用，跳过验证步骤")
+        logger.info("未配置行者、iGPSport 或 Garmin 上传，跳过验证步骤")
     
 except Exception as e:
     logger.error(f"验证步骤失败: {e}")
     logger.info("请手动访问行者平台确认同步结果")
     time.sleep(5)
 
-# === 步骤9：iGPSport → OneLap 增量同步（新增）===
-logger.info("===== 步骤9：iGPSport → OneLap 增量同步 =====")
+# === 步骤10：iGPSport → OneLap 增量同步（新增）===
+logger.info("===== 步骤10：iGPSport → OneLap 增量同步 =====")
 try:
     # 检查是否启用了增量同步
     if not IGPSPORT_TO_ONELAP_ENABLE:

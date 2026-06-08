@@ -6,6 +6,7 @@
 - ✅ 行者 (XOSS)
 - ✅ 捷安特骑行 (Giant)
 - ✅ iGPSport
+- ✅ Garmin Connect 中国区
 - ✅ Strava
 
 当前版本已支持：
@@ -14,6 +15,7 @@
 - OneLap 下载状态记录：已完成下载会记录到 `onelap_download_state.json`，重复运行时可跳过已下载文件。
 - `.part` 临时文件保护：下载中断时降低留下坏文件的概率。
 - iGPSport → OneLap 反向增量同步：支持按时间戳筛选增量记录，并通过 OneLap 上传接口补录。
+- Garmin Connect 中国区同步：支持登录后批量导入 OneLap 下载的运动文件，并可作为增量同步基准。
 - Strava OAuth 同步：支持首次授权、token 自动刷新、上传测试、重复上传保护和错误分类日志。
 - 打包发布：GitHub Actions 支持 Windows / Linux 构建，推送 `v*` 标签时可自动创建 GitHub Release。
 
@@ -76,7 +78,7 @@ python3 SyncOnelapToXoss.py
 ```
 
 程序会自动：
-1. 执行原有逻辑（OneLap → 行者/捷安特/iGPSport/Strava）
+1. 执行原有逻辑（OneLap → 行者/捷安特/iGPSport/Garmin/Strava）
 2. 执行新增逻辑（iGPSport → OneLap 增量同步）
 
 ### 工作流程
@@ -84,9 +86,9 @@ python3 SyncOnelapToXoss.py
 ```
 程序启动
     │
-    ├── 步骤1-7: 原有逻辑（OneLap → 行者/捷安特/iGPSport）
+    ├── 步骤1-9: 原有逻辑（OneLap → 行者/捷安特/iGPSport/Garmin/Strava）
     │
-    └── 步骤8: 新增逻辑（iGPSport → OneLap 增量同步）
+    └── 步骤10: 新增逻辑（iGPSport → OneLap 增量同步）
             │
             ├── 登录 iGPSport（API方式）
             ├── 获取所有记录（180条）
@@ -124,7 +126,7 @@ python3 SyncOnelapToXoss.py
 2.  **配置账号**：
     *   `settings.ini` 是实际运行配置，`settings.ini.example` 是示例模板。
     *   如果 `settings.ini` 被覆盖，可复制 `settings.ini.example` 后重命名为 `settings.ini`。
-    *   用记事本打开，填入您的 OneLap、行者、捷安特或 iGPSport 账号密码。
+    *   用记事本打开，填入您的 OneLap、行者、捷安特、iGPSport 或 Garmin 账号密码。
     *   **注意**：`enable_sync = true` 表示启用该平台的同步。
 3.  **运行程序**：
     *   双击 `SyncOnelapToXoss.exe`。
@@ -154,12 +156,13 @@ python3 SyncOnelapToXoss.py
 本工具支持多种同步场景，请根据需求修改 `settings.ini`：
 
 ### 场景 A：OneLap 数据同步到其他平台 (默认)
-*   **用途**：将顽鹿(OneLap)的骑行记录同步到行者、捷安特、iGPSport 或 Strava。
+*   **用途**：将顽鹿(OneLap)的骑行记录同步到行者、捷安特、iGPSport、Garmin 或 Strava。
 *   **配置**：
     *   `[onelap]`: 填入账号密码（必须）。
     *   `[xoss]`: 填入账号密码（如不同步到行者，可不填）。
     *   `[giant]`: 填入账号密码并将 `enable_sync = true` (如不同步到捷安特，可不填)。
     *   `[igpsport]`: 填入账号密码并将 `enable_sync = true` (如不同步到 iGPSport，可不填)。
+    *   `[garmin]`: 填入 Garmin Connect 中国区账号密码并将 `enable_sync = true` (如不同步到 Garmin，可不填)。
     *   `[strava]`: 如需同步到 Strava，需配置 `client_id` / `client_secret` 并先完成一次授权。
 
 ### 场景 B：iGPSport 数据反向同步到 OneLap (新功能)
@@ -190,6 +193,12 @@ enable_sync = false       # 是否启用捷安特同步
 username = 13800138000    # iGPSport账号
 password = your_password
 enable_sync = false       # 是否启用iGPSport同步（主程序方向）
+
+[garmin]
+username = 13800138000    # Garmin Connect 中国区账号
+password = your_password
+enable_sync = false       # 是否启用 Garmin 同步
+max_upload_files = 0      # Garmin 每批最多上传文件数；0 表示使用全局批大小
 
 [strava]
 enable_sync = false       # 是否启用 Strava 同步
@@ -257,11 +266,13 @@ python3 SyncOnelapToXoss.py --strava-upload-test /path/to/file.fit
 1. XOSS / 行者
 2. iGPSport
 3. Giant / 捷安特
-4. Strava
+4. Garmin Connect 中国区
+5. Strava
 
 示例：
 - 如果 XOSS 和 Strava 都启用，优先使用 XOSS 作为增量基准
 - 如果只启用 Strava，则使用 Strava 作为增量基准
+- 如果 XOSS / iGPSport / Giant 都不可用，但 Garmin 启用且可读取最新记录，则使用 Garmin 作为增量基准
 
 ### 4. Strava 去重说明
 
@@ -312,6 +323,13 @@ pip install -r requirements.txt
 ## 📝 版本历史
 
 完整发布说明见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。README 仅保留主要功能和关键修复摘要。
+
+### v1.2.13 (2026-06-03)
+- ✅ 新增 Garmin Connect 中国区平台支持，可将 OneLap 下载文件导入 Garmin。
+- ✅ Garmin 支持作为正向增量同步基准，优先级位于 Giant 之后、Strava 之前。
+- ✅ Garmin 支持按批上传，`max_upload_files` 可配置每批最多上传文件数。
+- ✅ Garmin 上传按活动时间从旧到新执行，便于异常中断后继续增量同步。
+- ✅ 配置模板和使用文档新增 `[garmin]` 配置说明。
 
 ### v1.2.12 (2026-04-25)
 - ✅ 主同步链路切换到 OneLap 新版签名 API，使用 token + 签名分页获取活动。

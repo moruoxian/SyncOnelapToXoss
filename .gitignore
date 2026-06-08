@@ -6,6 +6,7 @@
 # 注意：settings.local.ini / strava_upload_state.json 可能包含真实账号、密码、token、client secret，禁止提交
 settings.local.ini
 strava_upload_state.json
+onelap_download_state.json
 
 # Python 缓存文件
 __pycache__/

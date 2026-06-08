@@ -1,5 +1,18 @@
 # 发布说明
 
+## v1.2.13 (2026-06-03)
+
+### 新增功能：Garmin Connect 中国区同步
+
+- 新增 Garmin Connect 中国区平台支持，可将 OneLap 下载的运动文件导入 `https://connect.garmin.cn/app/import-data`。
+- Garmin 使用浏览器自动登录，遇到验证码、短信验证或二次验证时允许用户在浏览器中手动完成。
+- Garmin 支持作为正向增量同步基准，优先级位于 Giant 之后、Strava 之前。
+- Garmin 上传支持按批导入，`[garmin] max_upload_files` 可指定 Garmin 每批最多上传文件数。
+- Garmin 上传顺序按 OneLap 活动时间从旧到新执行，避免中途异常后最新时间被提前推进导致漏传。
+- `settings.ini.example`、README 和使用说明新增 `[garmin]` 配置和使用场景说明。
+
+---
+
 ## v1.2.12 (2026-04-25)
 
 ### 修复与优化
