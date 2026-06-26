@@ -1,0 +1,91 @@
+# =============================================================================
+# OneLap 多平台数据同步工具 — Docker Compose
+# =============================================================================
+#
+# 快速上手：
+#   1. cp settings.ini.example settings.ini      # 复制配置模板
+#   2. 编辑 settings.ini，填入各平台账号密码
+#   3. docker compose up -d                      # 后台启动
+#   4. 浏览器打开 http://localhost:6080/vnc.html 观察运行过程
+#      (遇到验证码可直接在 noVNC 页面里手动操作)
+#
+# 如果构建时拉取镜像失败（1panel / 镜像站未代理 selenium 镜像）：
+#
+#   方式一（预拉镜像，推荐）：
+#     docker pull docker.io/selenium/standalone-chromium:latest
+#     如果仍然失败，临时绕过镜像站：
+#     docker pull --registry-mirror= docker.io/selenium/standalone-chromium:latest
+#     docker compose up -d
+#
+#   方式二（1Panel 面板）：
+#     在 Docker 镜像加速列表里追加 Docker Hub 官方地址作为 fallback，
+#     然后重启 Docker 服务。
+#
+# 加速构建（国内）：
+#   取消下面 build.args 的注释，一键开启 apt + pip 镜像加速：
+#
+#     docker compose build --build-arg APT_MIRROR=mirrors.aliyun.com
+#
+# 或直接编辑下方 args 写死镜像地址后：
+#     docker compose build
+#
+# 常用镜像站: mirrors.aliyun.com / mirrors.tuna.tsinghua.edu.cn / mirrors.ustc.edu.cn
+#
+# 常用命令：
+#   docker compose up -d        # 后台启动（首次自动构建镜像）
+#   docker compose up           # 前台启动，Ctrl+C 停止
+#   docker compose build        # 仅构建镜像
+#   docker compose down         # 停止并删除容器
+#   docker compose logs -f      # 实时查看日志
+#   docker compose restart      # 重启容器
+#
+# VNC 连接方式：
+#   浏览器:   http://localhost:6080/vnc.html  （推荐，无需安装客户端）
+#   VNC 客户端: localhost:5900               （RealVNC / TigerVNC 等）
+#   默认密码:  onelap123                      （可通过环境变量 VNC_PW 修改）
+#
+# 安全提示：
+#   - settings.ini 含明文密码，确保不在公网暴露 5900/6080 端口
+#   - 如需公网访问，建议在前面加一层 VPN 或 SSH 隧道
+# =============================================================================
+
+services:
+  onelap-sync:
+    build:
+      context: .
+      # 国内加速：取消下面两行注释，构建时自动切换 apt/pip 镜像源
+      # args:
+      #   - APT_MIRROR=mirrors.aliyun.com
+      #   - PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
+    image: onelap-sync:latest
+    container_name: onelap-sync
+
+    # 以 root 运行，避免宿主机 bind mount 目录权限问题
+    # Chrome 已配置 --no-sandbox，以 root 运行无安全隐患
+    user: "0:0"
+
+    # ---- 端口 ----
+    ports:
+      - "5900:5900"   # VNC（桌面客户端）
+      - "6080:6080"   # noVNC（浏览器）
+
+    # ---- 文件挂载 ----
+    volumes:
+      # 【必选】配置文件，复制 settings.ini.example 后填入真实账号密码
+      - ./settings.ini:/app/settings.ini
+
+      # 【推荐】下载的 FIT 文件持久化，下次运行可跳过已下载
+      - ./downloads:/app/downloads
+
+      # 【推荐】状态文件持久化（通过 data 目录 + symlink 避免 Docker 创建成目录）
+      - ./data:/app/data
+
+    # ---- 环境变量 ----
+    environment:
+      # VNC 密码（修改此处即可更换密码）
+      - VNC_PW=onelap123
+
+      # 运行模式:
+      #   sync  - 自动执行同步，结束后容器保持 30 分钟供 VNC 查看结果（默认）
+      #   vnc   - 仅启动 VNC + 浏览器，不自动同步，适合手动调试或处理验证码
+      - ONELAP_MODE=sync
