@@ -42,6 +42,7 @@ STRAVA_STATE_FILE = os.path.join(APP_DIR, 'strava_upload_state.json')
 ONELAP_DOWNLOAD_STATE_FILE = os.path.join(APP_DIR, 'onelap_download_state.json')
 ONELAP_BASE_WEB_URL = 'https://www.onelap.cn'
 ONELAP_BASE_APP_URL = 'https://u.onelap.cn'
+ONELAP_RECORD_PAGE_URL = f'{ONELAP_BASE_APP_URL}/recordPage'
 ONELAP_LIST_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/list'
 ONELAP_DETAIL_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/{{record_id}}'
 ONELAP_DOWNLOAD_API = f'{ONELAP_BASE_APP_URL}/api/otm/ride_record/analysis/fit_content/{{fit_key}}'
@@ -544,9 +545,6 @@ def login_onelap_browser(tab, account, password):
         if not wait_for_onelap_login_result(tab, timeout=90):
             raise Exception(f"顽鹿登录失败，当前URL: {tab.url}")
 
-        tab.get(f'{ONELAP_BASE_APP_URL}/analysis')
-        time.sleep(5)
-
         auth_context = get_onelap_auth_context(tab)
         if not auth_context.get('token'):
             raise Exception('未能从 localStorage 读取 token')
@@ -609,11 +607,8 @@ def generate_onelap_sign_headers(params):
 def wait_for_onelap_login_result(tab, timeout=90):
     end = time.time() + timeout
     while time.time() < end:
-        current_url = tab.url or ''
-        if 'u.onelap.cn' in current_url and 'login.html' not in current_url:
-            return True
-        user_info = tab.run_js("return localStorage.getItem('userInfo');")
-        if user_info:
+        auth_context = get_onelap_auth_context(tab)
+        if auth_context.get('token'):
             return True
         time.sleep(1)
     return False
@@ -647,7 +642,7 @@ def build_onelap_api_session(token, cookies_dict, session=None):
         'User-Agent': ONELAP_USER_AGENT,
         'Authorization': token,
         'Origin': ONELAP_BASE_APP_URL,
-        'Referer': f'{ONELAP_BASE_APP_URL}/analysis',
+        'Referer': ONELAP_RECORD_PAGE_URL,
     })
     session.cookies.update(cookies_dict or {})
     return session
@@ -854,7 +849,7 @@ def fetch_activities(session, auth_context, latest_sync_activity):
     session.headers.update({
         'User-Agent': ONELAP_USER_AGENT,
         'Origin': ONELAP_BASE_APP_URL,
-        'Referer': f'{ONELAP_BASE_APP_URL}/analysis',
+        'Referer': ONELAP_RECORD_PAGE_URL,
     })
     if token:
         session.headers['Authorization'] = token
