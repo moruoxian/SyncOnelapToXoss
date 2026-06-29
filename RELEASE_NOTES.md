@@ -1,5 +1,20 @@
 # 发布说明
 
+## v1.2.14 (2026-06-29)
+
+### 修复顽鹿登录与新增 Docker 部署
+
+- 适配顽鹿新版登录页 `u.onelap.cn/login`（Arco Design），登录输入框、密码框和登录按钮均采用新版选择器，并保留旧版页面选择器作为兜底。
+- 登录成功判定优先读取 localStorage 中的 token，再以 URL 跳转和 userInfo 作为兜底，提升登录成功识别的可靠性。
+- OneLap 接口 Referer 统一指向 `recordPage` 数据管理页，修复因 Referer 不匹配导致的请求异常。
+- 新增 `[app] debug_mode` 调试开关：登录失败时浏览器保持打开并打印当前 URL、标题和 localStorage 内容，便于排查问题。
+- 新增 Docker 部署支持（`Dockerfile`、`docker-compose.yml`、`entrypoint.sh`），基于 selenium 官方镜像并内置 noVNC，可在浏览器中观察运行过程、手动处理验证码。
+- `settings.ini` 不再纳入版本控制（加入 `.gitignore`），避免误提交真实账号密码；请从 `settings.ini.example` 复制后填写。
+
+感谢 @tanpengsccd 贡献顽鹿登录修复与 Docker 部署方案。
+
+---
+
 ## v1.2.13 (2026-06-03)
 
 ### 新增功能：Garmin Connect 中国区同步

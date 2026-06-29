@@ -324,6 +324,14 @@ pip install -r requirements.txt
 
 完整发布说明见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。README 仅保留主要功能和关键修复摘要。
 
+### v1.2.14 (2026-06-29)
+- ✅ 适配顽鹿新版登录页 `u.onelap.cn/login`，新旧页面选择器自动兼容。
+- ✅ 登录成功判定优先读取 token，URL 与 userInfo 作为兜底，提升识别可靠性。
+- ✅ OneLap 接口 Referer 统一指向 `recordPage` 数据管理页，修复请求异常。
+- ✅ 新增 `[app] debug_mode` 调试开关，登录失败时保留浏览器并打印诊断信息。
+- ✅ 新增 Docker 部署支持（含 noVNC），可在浏览器中观察运行过程、手动处理验证码。
+- ✅ `settings.ini` 不再纳入版本控制，改为从 `settings.ini.example` 复制填写，避免误提交账号密码。
+
 ### v1.2.13 (2026-06-03)
 - ✅ 新增 Garmin Connect 中国区平台支持，可将 OneLap 下载文件导入 Garmin。
 - ✅ Garmin 支持作为正向增量同步基准，优先级位于 Giant 之后、Strava 之前。
