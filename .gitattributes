@@ -1,0 +1,7 @@
+# Shell 脚本必须使用 LF 换行符，否则在 Linux 容器中无法执行
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+
+# Dockerfile 与 compose 同样使用 LF
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
