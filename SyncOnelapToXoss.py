@@ -78,6 +78,7 @@ def load_config_from_ini(config_file=CONFIG_FILE_PATH):
         cfg = {}
         cfg['LOG_LEVEL'] = config.get('app', 'log_level', fallback='INFO')
         cfg['HEADLESS_MODE'] = config.getboolean('app', 'headless_mode', fallback=False)
+        cfg['DEBUG_MODE'] = config.getboolean('app', 'debug_mode', fallback=False)
         cfg['ONELAP_ACCOUNT'] = config.get('onelap', 'username', fallback='')
         cfg['ONELAP_PASSWORD'] = config.get('onelap', 'password', fallback='')
         cfg['XOSS_ACCOUNT'] = config.get('xoss', 'username', fallback='')
@@ -130,6 +131,7 @@ if ini_config:
     # 使用INI配置
     LOG_LEVEL = ini_config['LOG_LEVEL']
     HEADLESS_MODE = ini_config['HEADLESS_MODE']
+    DEBUG_MODE = ini_config['DEBUG_MODE']
     ONELAP_ACCOUNT = ini_config['ONELAP_ACCOUNT']
     ONELAP_PASSWORD = ini_config['ONELAP_PASSWORD']
     XOSS_ACCOUNT = ini_config['XOSS_ACCOUNT']
@@ -193,6 +195,7 @@ else:
     print("[INFO]使用默认配置")
     LOG_LEVEL = 'INFO'
     HEADLESS_MODE = False
+    DEBUG_MODE = False
     ONELAP_ACCOUNT = ''
     ONELAP_PASSWORD = ''
     XOSS_ACCOUNT = ''
@@ -518,27 +521,47 @@ def login_onelap_browser(tab, account, password):
 
     try:
         logger.info("正在访问顽鹿登录页面...")
-        tab.get(f'{ONELAP_BASE_WEB_URL}/login.html')
+        tab.get(f'{ONELAP_BASE_APP_URL}/login')
         time.sleep(3)
 
         logger.info(f"顽鹿登录页面标题: {tab.title}")
         logger.info(f"顽鹿当前URL: {tab.url}")
 
-        username_input = tab.ele('.from1 login_1', timeout=5)
+        # 适配新旧顽鹿登录页面
+        # 新版 u.onelap.cn/login (Arco Design): @@attr=value 精确匹配
+        # 旧版 www.onelap.cn/login.html: .class 选择器
+        username_input = tab.ele('@@placeholder=账号 / 手机号 / 邮箱', timeout=3)
+        if not username_input:
+            username_input = tab.ele('@type=text', timeout=2)
+        if not username_input:
+            username_input = tab.ele('.from1 login_1', timeout=2)
         if not username_input:
             raise Exception("未找到用户名输入框")
         username_input.clear()
         username_input.input(account)
         logger.info("已输入顽鹿账号信息")
 
-        password_input = tab.ele('.from1 login_password ', timeout=5)
+        password_input = tab.ele('@@placeholder=请输入密码', timeout=3)
+        if not password_input:
+            password_input = tab.ele('@@data-role=password', timeout=2)
+        if not password_input:
+            password_input = tab.ele('.from1 login_password ', timeout=2)
+        if not password_input:
+            password_input = tab.ele('@type=password', timeout=2)
         if not password_input:
             raise Exception("未找到密码输入框")
         password_input.clear()
         password_input.input(password)
         logger.info("已输入顽鹿密码信息")
 
-        tab.ele('.from_yellow_btn', timeout=5).click()
+        login_btn = tab.ele('@@data-role=submit-login', timeout=3)
+        if not login_btn:
+            login_btn = tab.ele('@class=btn-primary', timeout=2)
+        if not login_btn:
+            login_btn = tab.ele('.from_yellow_btn', timeout=2)
+        if not login_btn:
+            raise Exception("未找到登录按钮")
+        login_btn.click()
         logger.info("已点击顽鹿登录按钮")
         logger.info("如果出现验证码/二次确认，请在浏览器中手动完成")
 
@@ -610,6 +633,12 @@ def wait_for_onelap_login_result(tab, timeout=90):
         auth_context = get_onelap_auth_context(tab)
         if auth_context.get('token'):
             return True
+        current_url = tab.url or ''
+        if 'u.onelap.cn' in current_url and 'login.html' not in current_url and '/login' not in current_url:
+            return True
+        user_info = tab.run_js("return localStorage.getItem('userInfo');")
+        if user_info:
+            return True
         time.sleep(1)
     return False
 
@@ -628,6 +657,21 @@ def get_onelap_auth_context(tab):
         token = user_info[0].get('token')
     if not token and isinstance(user_info, dict):
         token = user_info.get('token')
+
+    if not token:
+        try:
+            all_keys = tab.run_js("""
+                var keys = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                    keys.push(localStorage.key(i));
+                }
+                return keys;
+            """)
+            logger.warning(f"localStorage 中未找到 'token' 键。当前 localStorage 所有键: {all_keys}")
+        except Exception:
+            logger.warning("localStorage 中未找到 'token' 键，且无法枚举 localStorage 键名")
+        logger.warning(f"当前页面 URL: {tab.url}")
+        logger.warning(f"当前页面标题: {tab.title}")
 
     cookies = {}
     for cookie in tab.cookies():
@@ -3061,6 +3105,27 @@ try:
     logger.info("顽鹿登录完成，准备获取活动数据...")
 except Exception as e:
     logger.critical(f"顽鹿登录失败: {e}")
+    if DEBUG_MODE:
+        logger.info("=" * 60)
+        logger.info("[DEBUG MODE] 浏览器将保持打开，请手动检查页面状态")
+        logger.info(f"[DEBUG MODE] 当前 URL: {tab.url}")
+        logger.info(f"[DEBUG MODE] 当前标题: {tab.title}")
+        try:
+            all_keys = tab.run_js("""
+                var keys = [];
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    var v = localStorage.getItem(k);
+                    if (v && v.length > 100) v = v.substring(0, 100) + '...';
+                    keys.push(k + '=' + v);
+                }
+                return keys;
+            """)
+            logger.info(f"[DEBUG MODE] localStorage 内容: {all_keys}")
+        except Exception:
+            logger.info("[DEBUG MODE] 无法读取 localStorage 内容")
+        logger.info("[DEBUG MODE] 请在浏览器中手动完成登录或检查问题，然后按 Enter 关闭...")
+        input()
     tab.close()
     sys.exit(1)
 

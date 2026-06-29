@@ -5,6 +5,7 @@ name = OneLap到多平台数据同步工具
 version = 1.2.13
 log_level = INFO
 headless_mode = false
+debug_mode = false
 
 [onelap]
 username = 13800138000
