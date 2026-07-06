@@ -43,6 +43,8 @@ expires_at = 0
 redirect_port = 8765
 athlete_id =
 athlete_name =
+# OneLap FIT 使用 GCJ-02 坐标系，Strava 需要 WGS84；启用后上传前自动转换
+gcj02_to_wgs84 = true
 
 [sync]
 storage_dir = ./downloads

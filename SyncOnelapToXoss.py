@@ -26,6 +26,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import configparser
 import sys
 
+# 导入 FIT 坐标转换模块（GCJ-02 -> WGS84，用于 Strava 上传前转换）
+try:
+    from fit_coord_transform import get_strava_upload_path, cleanup_temp_file
+    FIT_COORD_TRANSFORM_AVAILABLE = True
+except ImportError:
+    FIT_COORD_TRANSFORM_AVAILABLE = False
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -103,6 +110,7 @@ def load_config_from_ini(config_file=CONFIG_FILE_PATH):
         cfg['STRAVA_REDIRECT_PORT'] = config.getint('strava', 'redirect_port', fallback=8765)
         cfg['STRAVA_ATHLETE_ID'] = config.get('strava', 'athlete_id', fallback='').strip()
         cfg['STRAVA_ATHLETE_NAME'] = config.get('strava', 'athlete_name', fallback='').strip()
+        cfg['STRAVA_GCJ02_TO_WGS84'] = config.getboolean('strava', 'gcj02_to_wgs84', fallback=True)
         cfg['STORAGE_DIR'] = config.get('sync', 'storage_dir', fallback='./downloads')
         
         formats_str = config.get('sync', 'supported_formats', fallback='.fit,.gpx,.tcx')
@@ -156,6 +164,7 @@ if ini_config:
     STRAVA_REDIRECT_PORT = ini_config.get('STRAVA_REDIRECT_PORT', 8765)
     STRAVA_ATHLETE_ID = ini_config.get('STRAVA_ATHLETE_ID', '')
     STRAVA_ATHLETE_NAME = ini_config.get('STRAVA_ATHLETE_NAME', '')
+    STRAVA_GCJ02_TO_WGS84 = ini_config.get('STRAVA_GCJ02_TO_WGS84', True)
     STORAGE_DIR = ini_config['STORAGE_DIR']
     SUPPORTED_FORMATS = ini_config['SUPPORTED_FORMATS']
     MAX_FILE_SIZE = ini_config['MAX_FILE_SIZE']
@@ -220,6 +229,7 @@ else:
     STRAVA_REDIRECT_PORT = 8765
     STRAVA_ATHLETE_ID = ''
     STRAVA_ATHLETE_NAME = ''
+    STRAVA_GCJ02_TO_WGS84 = True
     STORAGE_DIR = './downloads'
     SUPPORTED_FORMATS = ['.fit', '.gpx', '.tcx']
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -2616,20 +2626,44 @@ def upload_files_to_strava(valid_files, config_file=CONFIG_FILE_PATH):
     if not access_token:
         logger.info('[Strava] 未启用或 token 不可用，跳过')
         return {'ok': False, 'success': 0, 'skipped': 0, 'failed': len(valid_files)}
+
+    # 读取 GCJ-02 -> WGS84 坐标转换配置
+    gcj02_to_wgs84_enabled = True
+    try:
+        _cfg = configparser.ConfigParser()
+        _cfg.read(config_file, encoding='utf-8-sig')
+        if _cfg.has_section('strava'):
+            gcj02_to_wgs84_enabled = _cfg.getboolean('strava', 'gcj02_to_wgs84', fallback=True)
+    except Exception:
+        pass
+
+    if gcj02_to_wgs84_enabled and FIT_COORD_TRANSFORM_AVAILABLE:
+        logger.info('[Strava] 已启用 GCJ-02 -> WGS84 坐标转换（OneLap FIT -> Strava）')
+    elif gcj02_to_wgs84_enabled and not FIT_COORD_TRANSFORM_AVAILABLE:
+        logger.warning('[Strava] GCJ-02 -> WGS84 转换已启用但 fit_coord_transform 模块未加载，将上传原始文件')
+
     state = load_strava_upload_state()
     success_count = 0
     skipped_count = 0
     failed_count = 0
     for file_path in valid_files:
+        upload_path = file_path  # 实际用于上传的文件路径（可能为转换后的临时文件）
         try:
-            signature = build_strava_file_signature(file_path)
+            signature = build_strava_file_signature(file_path)  # 始终基于原始文件做去重签名
             state_item = state.get(signature) or {}
             if state_item.get('uploaded'):
                 logger.info(f"[Strava] 跳过重复文件: {os.path.basename(file_path)}")
                 skipped_count += 1
                 continue
+
+            # GCJ-02 -> WGS84 坐标转换（如启用且模块可用）
+            if gcj02_to_wgs84_enabled and FIT_COORD_TRANSFORM_AVAILABLE:
+                upload_path = get_strava_upload_path(file_path, enable_conversion=True)
+                if upload_path != file_path:
+                    logger.info(f"[Strava] 坐标转换完成，上传 WGS84 版本: {os.path.basename(file_path)}")
+
             logger.info(f"[Strava] 开始上传: {os.path.basename(file_path)}")
-            upload_data = upload_file_to_strava(file_path, access_token)
+            upload_data = upload_file_to_strava(upload_path, access_token)
             upload_id = upload_data.get('id') or upload_data.get('id_str')
             logger.info(f"[Strava] 上传已提交，upload_id={upload_id}")
             result = None
@@ -2664,10 +2698,14 @@ def upload_files_to_strava(valid_files, config_file=CONFIG_FILE_PATH):
                 save_strava_upload_state(state)
                 logger.info(f"[Strava] {friendly}: {os.path.basename(file_path)}")
                 skipped_count += 1
-                continue
-            failed_count += 1
-            logger.error(f"[Strava] 上传失败 {os.path.basename(file_path)} [{category}]: {friendly}")
-            logger.debug(f"[Strava] 原始错误: {err_text}")
+            else:
+                failed_count += 1
+                logger.error(f"[Strava] 上传失败 {os.path.basename(file_path)} [{category}]: {friendly}")
+                logger.debug(f"[Strava] 原始错误: {err_text}")
+        finally:
+            # 清理坐标转换产生的临时文件
+            if upload_path != file_path:
+                cleanup_temp_file(upload_path, file_path)
     logger.info(f"[Strava] 上传完成，成功 {success_count}/{len(valid_files)}，跳过重复 {skipped_count}，失败 {failed_count}")
     return {
         'ok': failed_count == 0,

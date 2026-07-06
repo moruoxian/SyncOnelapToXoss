@@ -1,3 +1,4 @@
 DrissionPage>=4.0.0
-requests>=2.25.0 
+requests>=2.25.0
 bs4>=0.0.1
+garmin-fit-sdk>=21.0.0
