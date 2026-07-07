@@ -2,32 +2,32 @@
 
 ## v1.2.15 (2026-07-07)
 
-### 新增功能：Strava 同步时 FIT 坐标自动转换（GCJ-02 → WGS84）
+### 🎯 新增功能：Strava 同步时自动修正坐标（国内 GCJ-02 → 国际 WGS84）
 
-OneLap（顽鹿）下载的 FIT 文件使用 GCJ-02 火星坐标系，而 Strava 采用 WGS84 国际标准坐标系。直接上传会导致轨迹位置偏移约 50-500 米。
+很多人发现 OneLap 同步到 Strava 后，轨迹位置总是偏离实际路线几百米，这是因为：
+- OneLap 作为国内平台，使用**GCJ-02 火星坐标系**加密坐标
+- Strava 作为国际平台，使用**WGS84 标准 GPS 坐标系**
+- 两种坐标系在国内有约 50-500 米的偏差
 
-#### 功能说明
+**现在这个问题彻底解决了！** 程序会在上传到 Strava 前**自动把所有轨迹点坐标从 GCJ-02 转为 WGS84**，修正位置偏移。
 
-- 新增 `fit_coord_transform.py` 模块，基于 `garmin-fit-sdk` 实现 FIT 文件全量坐标转换。
-- 转换范围覆盖 `record`、`lap`、`session` 等所有包含坐标的消息（position_lat/position_long、start_position_lat/position_long、end_position_lat/position_long、nec_lat/nec_long、swc_lat/swc_long）。
-- 境外坐标自动跳过（`out_of_china` 判断），不对海外轨迹做错误偏移。
-- 坐标系转换算法采用 `coordTransform_py` 标准实现，精度约 1-2 米。
+#### 用户使用
 
-#### 配置
+- 默认**自动启用**，无需手动操作，也不用更改配置
+- 如果不想用，可以在 `settings.ini` 的 `[strava]` 节关闭：
+  ```ini
+  [strava]
+  gcj02_to_wgs84 = false   # 默认为 true（开启）
+  ```
+- 原始 FIT 文件保持不变，国内平台（行者/捷安特/iGPSport/Garmin 中国区）仍使用原始 GCJ-02 坐标
 
-新增配置项 `[strava] gcj02_to_wgs84`，默认启用：
+#### 功能特点
 
-```ini
-[strava]
-gcj02_to_wgs84 = true   # true=启用(默认), false=上传原始文件
-```
-
-#### 实现细节
-
-- 上传前生成 WGS84 临时副本，原始 GCJ-02 文件保留不动（供国内平台继续使用）。
-- 上传完成后自动清理临时文件。
-- 去重签名基于原始文件，转换后不产生重复上传。
-- 依赖新增：`garmin-fit-sdk>=21.0.0`（已加入 `requirements.txt`）。
+- ✅ 自动判断：如果骑行轨迹在中国境外，不做转换（已经是 WGS84）
+- ✅ 全量转换：轨迹点、圈起点终点、边界框坐标全部转换
+- ✅ 不污染原始文件：转换后生成临时副本供 Strava 使用，上传完自动清理
+- ✅ 不产生重复上传：去重基于原始文件，不会因为转换后重新生成文件导致重复
+- ✅ 业界标准算法：精度误差控制在 1-2 米以内
 
 ---
 

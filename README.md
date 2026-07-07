@@ -327,11 +327,9 @@ pip install -r requirements.txt
 完整发布说明见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。README 仅保留主要功能和关键修复摘要。
 
 ### v1.2.15 (2026-07-07)
-- ✅ 新增 Strava 同步时 FIT 坐标自动转换（GCJ-02 → WGS84），解决 OneLap 火星坐标系在 Strava 上轨迹偏移问题。
-- ✅ 新增 `fit_coord_transform.py` 模块，基于 `garmin-fit-sdk` 实现 FIT 文件全量坐标转换。
-- ✅ 境外坐标自动跳过（`out_of_china` 判断），不误转。
-- ✅ 新增配置项 `[strava] gcj02_to_wgs84`，默认启用。
-- ✅ 转换后生成临时文件供 Strava 上传，上传完成自动清理，原始文件不受影响。
+- ✅ 新增 Strava 坐标自动修正功能：OneLap 的国内坐标系（GCJ-02）→ Strava 的国际标准坐标系（WGS84），解决轨迹偏移 50-500 米的问题。
+- ✅ 默认自动启用，无需额外配置；不想用可在 `settings.ini` 中关闭。
+- ✅ 境外骑行自动跳过，不会误转；转换精度可达 1-2 米。
 
 ### v1.2.14 (2026-06-29)
 - ✅ 适配顽鹿新版登录页 `u.onelap.cn/login`，新旧页面选择器自动兼容。
