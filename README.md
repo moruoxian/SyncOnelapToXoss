@@ -17,6 +17,7 @@
 - iGPSport → OneLap 反向增量同步：支持按时间戳筛选增量记录，并通过 OneLap 上传接口补录。
 - Garmin Connect 中国区同步：支持登录后批量导入 OneLap 下载的运动文件，并可作为增量同步基准。
 - Strava OAuth 同步：支持首次授权、token 自动刷新、上传测试、重复上传保护和错误分类日志。
+- Strava 坐标转换：上传前自动将 OneLap FIT 文件从 GCJ-02 火星坐标系转为 WGS84，消除轨迹偏移。
 - 打包发布：GitHub Actions 支持 Windows / Linux 构建，推送 `v*` 标签时可自动创建 GitHub Release。
 
 ## 🎉 新增功能：iGPSport → OneLap 反向增量同步
@@ -210,6 +211,7 @@ expires_at = 0            # 首次授权后自动写入
 redirect_port = 8765      # 本地回调端口
 athlete_id =              # 首次授权后自动写入
 athlete_name =            # 首次授权后自动写入
+gcj02_to_wgs84 = true     # 上传前自动转换 GCJ-02 → WGS84 坐标系
 
 [sync]
 storage_dir = ./downloads
@@ -323,6 +325,13 @@ pip install -r requirements.txt
 ## 📝 版本历史
 
 完整发布说明见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。README 仅保留主要功能和关键修复摘要。
+
+### v1.2.15 (2026-07-07)
+- ✅ 新增 Strava 同步时 FIT 坐标自动转换（GCJ-02 → WGS84），解决 OneLap 火星坐标系在 Strava 上轨迹偏移问题。
+- ✅ 新增 `fit_coord_transform.py` 模块，基于 `garmin-fit-sdk` 实现 FIT 文件全量坐标转换。
+- ✅ 境外坐标自动跳过（`out_of_china` 判断），不误转。
+- ✅ 新增配置项 `[strava] gcj02_to_wgs84`，默认启用。
+- ✅ 转换后生成临时文件供 Strava 上传，上传完成自动清理，原始文件不受影响。
 
 ### v1.2.14 (2026-06-29)
 - ✅ 适配顽鹿新版登录页 `u.onelap.cn/login`，新旧页面选择器自动兼容。

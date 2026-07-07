@@ -1,5 +1,36 @@
 # 发布说明
 
+## v1.2.15 (2026-07-07)
+
+### 新增功能：Strava 同步时 FIT 坐标自动转换（GCJ-02 → WGS84）
+
+OneLap（顽鹿）下载的 FIT 文件使用 GCJ-02 火星坐标系，而 Strava 采用 WGS84 国际标准坐标系。直接上传会导致轨迹位置偏移约 50-500 米。
+
+#### 功能说明
+
+- 新增 `fit_coord_transform.py` 模块，基于 `garmin-fit-sdk` 实现 FIT 文件全量坐标转换。
+- 转换范围覆盖 `record`、`lap`、`session` 等所有包含坐标的消息（position_lat/position_long、start_position_lat/position_long、end_position_lat/position_long、nec_lat/nec_long、swc_lat/swc_long）。
+- 境外坐标自动跳过（`out_of_china` 判断），不对海外轨迹做错误偏移。
+- 坐标系转换算法采用 `coordTransform_py` 标准实现，精度约 1-2 米。
+
+#### 配置
+
+新增配置项 `[strava] gcj02_to_wgs84`，默认启用：
+
+```ini
+[strava]
+gcj02_to_wgs84 = true   # true=启用(默认), false=上传原始文件
+```
+
+#### 实现细节
+
+- 上传前生成 WGS84 临时副本，原始 GCJ-02 文件保留不动（供国内平台继续使用）。
+- 上传完成后自动清理临时文件。
+- 去重签名基于原始文件，转换后不产生重复上传。
+- 依赖新增：`garmin-fit-sdk>=21.0.0`（已加入 `requirements.txt`）。
+
+---
+
 ## v1.2.14 (2026-06-29)
 
 ### 修复顽鹿登录与新增 Docker 部署
