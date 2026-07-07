@@ -42,11 +42,13 @@ RUN if [ -n "$PIP_INDEX" ]; then \
         DrissionPage>=4.0.0 \
         requests>=2.25.0 \
         bs4>=0.0.1 \
-        beautifulsoup4
+        beautifulsoup4 \
+        garmin-fit-sdk>=21.0.0
 
 # 复制程序文件
 COPY SyncOnelapToXoss.py /app/
 COPY incremental_sync_v2.py /app/
+COPY fit_coord_transform.py /app/
 COPY settings.ini.example /app/
 
 # 复制启动脚本
